@@ -291,6 +291,7 @@ enum {
 	DEBUG_SMUSH,		// Track SMUSH
 	DEBUG_MOONBASE_AI,	// Moonbase AI
 	DEBUG_NETWORK,		// Track Networking
+	DEBUG_HIGHRES_FONTS,	// High-resolution vector font overlay (font modernization RFC)
 };
 
 } // End of namespace Scumm

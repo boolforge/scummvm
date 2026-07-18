@@ -65,6 +65,7 @@ static const DebugChannelDef debugFlagList[] = {
 		{Scumm::DEBUG_SMUSH, "SMUSH", "Track SMUSH"},
 		{Scumm::DEBUG_MOONBASE_AI, "MOONBASEAI", "Track Moonbase AI"},
 		{Scumm::DEBUG_NETWORK, "NETWORK", "Track Networking"},
+		{Scumm::DEBUG_HIGHRES_FONTS, "HIGHRES_FONTS", "High-resolution vector font overlay (font modernization RFC)"},
 		DEBUG_CHANNEL_END
 };
 

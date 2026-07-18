@@ -69,6 +69,7 @@ class SeekableWriteStream;
 }
 namespace Graphics {
 class FontSJIS;
+class HighResFontOverlay;
 }
 
 /**
@@ -1681,6 +1682,18 @@ protected:
 public:
 	CharsetRenderer *_charset = nullptr;
 	byte _charsetColorMap[16];
+
+	/**
+	 * Non-owning handle to this engine's registered high-resolution
+	 * vector font overlay (see graphics/fonts/highres_font_overlay.h).
+	 * Owned by Graphics::HighResFontManager, not by ScummEngine; never
+	 * null (an inactive placeholder is returned when the feature is
+	 * unavailable or disabled), so callers only need an isActive()
+	 * check, never a null check. Purely ephemeral UI/rendering state:
+	 * never synced to save games.
+	 */
+	Graphics::HighResFontOverlay *_highResOverlay = nullptr;
+	bool _highResFontsEnabledLastFrame = false;
 
 	/**
 	 * All text is normally rendered into this overlay surface. Then later

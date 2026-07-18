@@ -37,6 +37,8 @@
 #include "gui/message.h"
 
 #include "graphics/cursorman.h"
+#include "graphics/fonts/highres_font_manager.h"
+#include "graphics/fonts/highres_font_overlay.h"
 #include "graphics/macgui/macfontmanager.h"
 
 #include "scumm/akos.h"
@@ -465,6 +467,13 @@ ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 
 
 ScummEngine::~ScummEngine() {
+	// _highResOverlay is owned by Graphics::HighResFontManager (a
+	// singleton), not by ScummEngine, so it is never deleted here --
+	// only cleared of any queued text left over from this session.
+	if (_highResOverlay)
+		_highResOverlay->clearQueue();
+	_highResOverlay = nullptr;
+
 	delete _musicEngine;
 
 	// Delete the sound object earlier than the actors
@@ -1008,6 +1017,33 @@ Common::Error ScummEngine::init() {
 	ConfMan.registerDefault("original_gui", true);
 	if (ConfMan.hasKey("original_gui", _targetName)) {
 		_useOriginalGUI = ConfMan.getBool("original_gui");
+	}
+
+	// High-resolution vector font overlay (font modernization RFC).
+	// Disabled by default: this is an experimental PoC-quality
+	// integration (see graphics/fonts/HIGHRES_FONTS.md), gated so it
+	// never changes behavior for anyone who has not opted in. The TTF
+	// asset is loaded exactly once, here during init(), never on the
+	// main game loop's hot path.
+	ConfMan.registerDefault("highres_fonts", false);
+	ConfMan.registerDefault("highres_font_path", "FreeSans.ttf");
+	ConfMan.registerDefault("highres_font_point_size", 18);
+	_highResFontsEnabledLastFrame = ConfMan.getBool("highres_fonts", _targetName);
+	if (_highResFontsEnabledLastFrame) {
+		Graphics::HighResFontManager::FontConfig fontConfig;
+		fontConfig.path = ConfMan.get("highres_font_path", _targetName);
+		fontConfig.pointSize = ConfMan.getInt("highres_font_point_size", _targetName);
+		fontConfig.id = "scumm_dialogue";
+		_highResOverlay = HighResFontMan.loadFont(fontConfig);
+		// Scale factors depend on the backend's *current* native output
+		// size versus the logical game resolution, which can change at
+		// runtime (window resize, fullscreen toggle); they are set from
+		// the backend, right before compositing, rather than cached
+		// here -- see SurfaceSdlGraphicsManager::drawHighResFontOverlay().
+		debugC(DEBUG_HIGHRES_FONTS, "highres_fonts enabled: font='%s' pt=%d loaded=%s",
+			fontConfig.path.c_str(), fontConfig.pointSize, (_highResOverlay && _highResOverlay->isActive()) ? "yes" : "no");
+	} else {
+		_highResOverlay = HighResFontMan.getOverlay("scumm_dialogue");
 	}
 
 	_enableAudioOverride = ConfMan.getBool("audio_override");
@@ -3100,6 +3136,30 @@ void ScummEngine_v0::scummLoop(int delta) {
 }
 
 void ScummEngine::scummLoop(int delta) {
+	// If highres_fonts was toggled since we last checked (e.g. from the
+	// Launcher's in-game options), pick that up here rather than
+	// requiring a restart: force a full redraw so the legacy raster
+	// path repaints anything the overlay was previously drawing (or
+	// vice versa). This is a cheap, once-per-iteration ConfMan read.
+	{
+		bool highResFontsNowEnabled = ConfMan.getBool("highres_fonts", _targetName);
+		if (highResFontsNowEnabled != _highResFontsEnabledLastFrame) {
+			_highResFontsEnabledLastFrame = highResFontsNowEnabled;
+			if (highResFontsNowEnabled && !_highResOverlay) {
+				Graphics::HighResFontManager::FontConfig fontConfig;
+				fontConfig.path = ConfMan.get("highres_font_path", _targetName);
+				fontConfig.pointSize = ConfMan.getInt("highres_font_point_size", _targetName);
+				fontConfig.id = "scumm_dialogue";
+				_highResOverlay = HighResFontMan.loadFont(fontConfig);
+			}
+			if (_highResOverlay)
+				_highResOverlay->clearQueue();
+			_fullRedraw = true;
+			debugC(DEBUG_HIGHRES_FONTS, "highres_fonts toggled to %s mid-game; forcing full redraw",
+				highResFontsNowEnabled ? "enabled" : "disabled");
+		}
+	}
+
 	// Notify the script about how much time has passed, in jiffies
 	if (VAR_TIMER != 0xFF)
 		VAR(VAR_TIMER) = delta;
