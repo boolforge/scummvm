@@ -189,6 +189,23 @@ Common::Point HighResFontOverlay::scaleCoordinatesToNative(const Common::Point &
 
 bool HighResFontOverlay::enqueueText(const Common::String &text, const Common::Point &legacyCoords,
 		int originalRasterWidth, uint32 colorIndex) {
+	// SCUMM's strings are single-byte (extended ASCII); widening each
+	// byte to its own codepoint is lossless for that caller and lets
+	// the actual queue/render path be Unicode-native throughout,
+	// rather than needing a second, byte-oriented code path.
+	Common::U32String widened;
+	for (uint i = 0; i < text.size(); i++)
+		widened += (uint32)(byte)text[i];
+	return enqueueTextInternal(widened, legacyCoords, originalRasterWidth, colorIndex);
+}
+
+bool HighResFontOverlay::enqueueText(const Common::U32String &text, const Common::Point &legacyCoords,
+		int originalRasterWidth, uint32 colorIndex) {
+	return enqueueTextInternal(text, legacyCoords, originalRasterWidth, colorIndex);
+}
+
+bool HighResFontOverlay::enqueueTextInternal(const Common::U32String &text, const Common::Point &legacyCoords,
+		int originalRasterWidth, uint32 colorIndex) {
 	if (!isActive() || text.empty())
 		return false;
 
@@ -248,7 +265,7 @@ void HighResFontOverlay::renderQueuedText(const QueuedText &entry, Graphics::Sur
 	int vectorWidth = 0;
 	uint32 numChars = 0;
 	for (uint i = 0; i < entry.text.size(); i++) {
-		uint32 chr = (byte)entry.text[i];
+		uint32 chr = entry.text[i];
 		vectorWidth += _font->getCharWidth(chr);
 		numChars++;
 	}
@@ -266,7 +283,7 @@ void HighResFontOverlay::renderQueuedText(const QueuedText &entry, Graphics::Sur
 	float penX = (float)origin.x;
 
 	for (uint i = 0; i < entry.text.size(); i++) {
-		uint32 chr = (byte)entry.text[i];
+		uint32 chr = entry.text[i];
 
 		GlyphInfo glyph;
 		if (!_atlas->getGlyph(chr, _font.get(), glyph)) {

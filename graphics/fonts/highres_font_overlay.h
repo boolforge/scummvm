@@ -24,6 +24,7 @@
 
 #include "common/scummsys.h"
 #include "common/str.h"
+#include "common/ustr.h"
 #include "common/array.h"
 #include "common/rect.h"
 #include "common/ptr.h"
@@ -130,6 +131,21 @@ public:
 		int originalRasterWidth, uint32 colorIndex);
 
 	/**
+	 * Unicode-native counterpart of enqueueText(const Common::String&, ...),
+	 * for callers whose source text is not representable as a single
+	 * byte per character (accented Latin, Cyrillic, etc. -- anything
+	 * outside plain CJK/RTL layout, which remains out of scope; see
+	 * graphics/fonts/HIGHRES_FONTS.md). Iterates actual Unicode
+	 * codepoints rather than bytes, so it is the correct overload for
+	 * any caller working in Common::U32String already (as
+	 * BladeRunner's TTF subtitle path does) rather than narrowing to
+	 * Common::String first, which would corrupt anything outside
+	 * Latin-1.
+	 */
+	bool enqueueText(const Common::U32String &text, const Common::Point &legacyCoords,
+		int originalRasterWidth, uint32 colorIndex);
+
+	/**
 	 * Renders (and clears) every queued text run onto
 	 * 'nativeScreenSurface'. Expected to be called by the backend once
 	 * per frame, directly after the legacy game surface has been
@@ -150,11 +166,14 @@ public:
 
 private:
 	struct QueuedText {
-		Common::String text;
+		Common::U32String text;
 		Common::Point coords;
 		int targetWidth;
 		uint32 color;
 	};
+
+	bool enqueueTextInternal(const Common::U32String &text, const Common::Point &legacyCoords,
+		int originalRasterWidth, uint32 colorIndex);
 
 	Common::Point scaleCoordinatesToNative(const Common::Point &legacyCoords) const;
 	void renderQueuedText(const QueuedText &entry, Graphics::Surface *dst);
