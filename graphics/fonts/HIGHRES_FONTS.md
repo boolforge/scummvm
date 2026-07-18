@@ -105,7 +105,21 @@ any one engine's debug enum.
   from another thread in the future (e.g. an audio-callback-timed subtitle
   system) does not have to retrofit locking later.
 
-## Migrating another engine
+## Backend coverage
+
+| Backend | Status |
+|---|---|
+| `surfacesdl` (default `sdl`) | Composited directly; built and linked. |
+| `opengl` (base class) | Composited via a blended texture; built and linked. |
+| `openglsdl` | Inherits the OpenGL hook (`OpenGLSdlGraphicsManager::updateScreen()` calls `OpenGL::OpenGLGraphicsManager::updateScreen()`); built and linked. |
+| `opendingux` | Inherits the SurfaceSDL hook (no `updateScreen()` override); configured with `--backend=opendingux` and built successfully on this (x86 Linux) host. |
+| `openpandora` | Inherits the SurfaceSDL hook the same way, but currently fails to build in this checkout for an unrelated, pre-existing reason: `backends/platform/openpandora/op-backend.o` passes a `Common::String` to an `FSDirectory` constructor that no longer accepts one (an API mismatch elsewhere in the tree, not touched by this work). Not something this pass attempted to fix. |
+| `maemosdl`, `riscossdl` | Subclass `SurfaceSdlGraphicsManager`/`OpenGLGraphicsManager` without overriding `updateScreen()`, so they inherit a hook the same way opendingux does, but neither is reachable through this repo's `--backend=` flag (only `maemo`, not `maemosdl`, is listed; `riscossdl` isn't listed at all), and neither was built end-to-end. |
+| `miyoo` | Overrides a differently-signatured internal `updateScreen(SDL_Rect *, int)`, not this class's public `updateScreen()`, so it is very likely still covered by the SurfaceSDL hook -- not individually confirmed. |
+| `android`, `atari`, `dc`, `ios`/`ios7`, `n64`, `psp`, `psp2`, `3ds`, `switch`, `wii`, `samsungtv` | **Not attempted.** These require cross-compilation toolchains and platform SDKs (devkitARM/devkitPro, PSP/PSP2 SDKs, a Dreamcast KOS toolchain, etc.) that are not present in this environment, and several render through entirely different, platform-specific 2D/3D APIs rather than SDL or this codebase's own OpenGL wrapper. Writing composition code for them here would not be compiled or checked in any way -- pure guesswork rather than the same empirically-verified engineering as the rest of this document. A contributor with access to the relevant SDK should follow the same pattern as the OpenGL hook (render to an intermediate alpha surface sized to the game's on-screen rectangle, then composite it as a blended textured quad/sprite through that platform's native draw call) as a starting point. |
+| `null` | Not applicable -- headless, no screen to composite onto. |
+
+
 
 The RFC that motivated this work names BladeRunner's subtitle renderer
 (`engines/bladerunner/subtitles.cpp`) as the next natural candidate, since
