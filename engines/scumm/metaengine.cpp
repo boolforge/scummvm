@@ -760,6 +760,15 @@ static const ExtraGuiOption semiSmoothScrolling = {
 	0
 };
 
+static const ExtraGuiOption highResFontsOption = {
+	_s("Use high-resolution vector fonts"),
+	_s("Render dialogue text with a crisp vector font instead of the original low-resolution raster font (experimental)"),
+	"highres_fonts",
+	false,
+	0,
+	0
+};
+
 static const ExtraGuiOption enableEnhancements {
 	"",
 	"",
@@ -941,6 +950,12 @@ const ExtraGuiOptions ScummMetaEngine::getExtraGuiOptions(const Common::String &
 	const Common::String guiOptions = parseGameGUIOptions(guiOptionsString);
 	const Common::Platform platform = Common::parsePlatform(ConfMan.get("platform", target));
 	const Common::String language = ConfMan.get("language", target);
+
+	// Experimental, PoC-quality feature (see graphics/fonts/HIGHRES_FONTS.md);
+	// offered for every SCUMM game rather than gated behind a new
+	// per-game GUIO_* flag, since it does not depend on any
+	// game-specific data.
+	options.push_back(highResFontsOption);
 
 	if (target.empty() || guiOptions.contains(GAMEOPTION_ORIGINALGUI)) {
 		options.push_back(enableOriginalGUI);
