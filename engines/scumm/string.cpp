@@ -1472,45 +1472,160 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 	}
 
 	// --- High-resolution vector font overlay interception ---------------
-	// Only intercept "plain" runs of text: strings carrying embedded
-	// SCUMM formatting opcodes (color changes, forced newlines, HE
-	// overlay markers) or multi-byte CJK sequences involve mid-string
-	// state changes that this deferred pipeline does not model, so
-	// those always fall back to the original per-character raster path
-	// below, exactly as if the feature were disabled.
+	// Segments the string at each embedded formatting opcode this
+	// pipeline understands -- newlines, inline color changes, and the
+	// layout-inert "skip N bytes" markers already used for embedded
+	// delay/sound cues -- enqueueing each plain run of literal text
+	// separately and replaying the exact pen/color state transitions
+	// the legacy per-character loop below applies for each opcode
+	// found in between. Classification (below) never has side effects,
+	// so a disqualified string always falls back to the unmodified
+	// legacy loop for 100% of itself, never a mix of the two paths.
+	//
+	// Two constructs still disqualify a string outright: multi-byte
+	// CJK text while in CJK mode, and a newline combined with centered
+	// or right-to-left layout (correctly pre-measuring the *next*
+	// line's width to re-center or mirror it, as the legacy loop does,
+	// is out of scope for this pass -- see graphics/fonts/HIGHRES_FONTS.md).
 	bool handledByHighResOverlay = false;
 	if (_highResFontsEnabledLastFrame && _highResOverlay && _highResOverlay->isActive() && buf[0]) {
-		bool plainRun = true;
-		for (int j = 0; buf[j] != 0; ++j) {
-			byte cc = buf[j];
-			if ((_game.heversion >= 72 && cc == code) ||
-				((cc == 0xFF || (_game.version <= 6 && cc == 0xFE)) && _game.heversion <= 71) ||
-				((cc & 0x80) != 0 && _useCJKMode)) {
-				plainRun = false;
-				break;
+		bool segmentable = true;
+		{
+			int j = 0;
+			while (buf[j] != 0 && segmentable) {
+				byte cc = buf[j];
+				if (_game.heversion >= 72 && cc == code) {
+					byte subOp = buf[j + 1];
+					if (subOp == 110 && _charset->_center)
+						segmentable = false;
+					j += 2;
+				} else if ((cc == 0xFF || (_game.version <= 6 && cc == 0xFE)) && _game.heversion <= 71) {
+					byte subOp = buf[j + 1];
+					j += 2;
+					if (subOp == 9 || subOp == 10 || subOp == 13 || subOp == 14 || subOp == 12) {
+						j += 2; // numeric argument (delay/sound cue, or 16-bit color) the legacy loop also skips
+					} else if ((subOp == 1 || subOp == 8) && (_charset->_center || _isRTL)) {
+						segmentable = false;
+					}
+				} else if ((cc & 0x80) != 0 && _useCJKMode) {
+					segmentable = false;
+				} else {
+					j++;
+				}
 			}
 		}
 
-		if (plainRun) {
-			const int width = _charset->getStringWidth(a, buf);
-			const byte colorIdx = _charset->getColor();
-			const uint32 rgb = ((uint32)_currentPalette[colorIdx * 3 + 0] << 16) |
-				((uint32)_currentPalette[colorIdx * 3 + 1] << 8) |
-				(uint32)_currentPalette[colorIdx * 3 + 2];
+		if (segmentable) {
+			const int origLeft = _charset->_left;
+			const int origTop = _charset->_top;
+			const byte origColorIdx = _charset->getColor();
 
-			if (_highResOverlay->enqueueText(Common::String((const char *)buf),
-					Common::Point(_charset->_left, _charset->_top), width, rgb)) {
-				// Replicate the bounding-box/pen-advance bookkeeping the
-				// per-character loop below would have produced, so the
-				// trailing code (continuation strings, save-name entry
-				// fields, etc.) keeps working even though no raster
-				// pixels were actually touched for this string.
-				_charset->_str.left = MIN(_charset->_str.left, (int16)_charset->_left);
-				_charset->_str.top = _charset->_top;
-				_charset->_str.right = _charset->_left + width;
-				_charset->_str.bottom = _charset->_top + _charset->getFontHeight();
-				_charset->_left += width;
+			Common::String segment;
+			int segLeft = _charset->_left;
+			int segTop = _charset->_top;
+			bool overlayOk = true;
+
+			_charset->_str.left = _charset->_left;
+			_charset->_str.top = _charset->_top;
+			_charset->_str.right = _charset->_left;
+			_charset->_str.bottom = _charset->_top;
+
+			auto flushSegment = [&]() {
+				if (!overlayOk || segment.empty())
+					return;
+				const int segWidth = _charset->getStringWidth(a, (const byte *)segment.c_str());
+				const byte colorIdx = _charset->getColor();
+				const uint32 rgb = ((uint32)_currentPalette[colorIdx * 3 + 0] << 16) |
+					((uint32)_currentPalette[colorIdx * 3 + 1] << 8) |
+					(uint32)_currentPalette[colorIdx * 3 + 2];
+
+				if (_highResOverlay->enqueueText(segment, Common::Point(segLeft, segTop), segWidth, rgb)) {
+					_charset->_str.left = MIN(_charset->_str.left, (int16)segLeft);
+					_charset->_str.top = MIN(_charset->_str.top, (int16)segTop);
+					_charset->_str.right = MAX(_charset->_str.right, (int16)(segLeft + segWidth));
+					_charset->_str.bottom = MAX(_charset->_str.bottom, (int16)(segTop + _charset->getFontHeight()));
+					segLeft += segWidth;
+					_charset->_left = segLeft;
+				} else {
+					overlayOk = false;
+				}
+				segment.clear();
+			};
+
+			int j = 0;
+			while (buf[j] != 0 && overlayOk) {
+				byte cc = buf[j];
+				if (_game.heversion >= 72 && cc == code) {
+					byte subOp = buf[j + 1];
+					j += 2;
+					flushSegment();
+					if (overlayOk && subOp == 110) {
+						// Classification guarantees _charset->_center is
+						// false whenever we reach this (see above).
+						_charset->_left = _charset->_startLeft;
+						_charset->_top += fontHeight;
+						segLeft = _charset->_left;
+						segTop = _charset->_top;
+					}
+				} else if ((cc == 0xFF || (_game.version <= 6 && cc == 0xFE)) && _game.heversion <= 71) {
+					byte subOp = buf[j + 1];
+					j += 2;
+					if (subOp == 9 || subOp == 10 || subOp == 13 || subOp == 14) {
+						j += 2;
+					} else if (subOp == 1 || subOp == 8) {
+						flushSegment();
+						if (overlayOk) {
+							// Classification guarantees neither _center
+							// nor _isRTL is set whenever we reach this.
+							_charset->_left = _charset->_startLeft;
+							if (!(_game.platform == Common::kPlatformFMTowns) && _string[0].height) {
+								_nextTop += _string[0].height;
+							} else {
+								_charset->_top += fontHeight;
+							}
+							segLeft = _charset->_left;
+							segTop = _charset->_top;
+						}
+					} else if (subOp == 12) {
+						color = buf[j] + (buf[j + 1] << 8);
+						j += 2;
+						flushSegment();
+						if (overlayOk) {
+							if (color == 0xFF)
+								_charset->setColor(_string[a].color, shadowModeFlag);
+							else
+								_charset->setColor(color, shadowModeFlag);
+						}
+					}
+					// Any other sub-op is a layout-inert no-op: no extra
+					// bytes, no state change, matching the legacy switch's
+					// default case.
+				} else {
+					segment += (char)cc;
+					j++;
+				}
+			}
+
+			flushSegment();
+
+			if (overlayOk) {
 				handledByHighResOverlay = true;
+			} else {
+				// enqueueText() only fails this way if the render-queue
+				// watchdog just cleared everything (see
+				// HighResFontOverlay::enqueueText()), including whatever
+				// earlier segments of *this* string it had already
+				// accepted -- so nothing from this string would actually
+				// appear on screen via the overlay. Undo the in-progress
+				// state mutation and let the legacy loop draw the whole
+				// string instead, rather than silently dropping it.
+				_charset->_left = origLeft;
+				_charset->_top = origTop;
+				_charset->setColor(origColorIdx, shadowModeFlag);
+				_charset->_str.left = origLeft;
+				_charset->_str.top = origTop;
+				_charset->_str.right = origLeft;
+				_charset->_str.bottom = origTop;
 			}
 		}
 	}
