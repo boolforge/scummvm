@@ -165,6 +165,18 @@ protected:
 	void drawOSD();
 #endif
 
+	/**
+	 * Composites every active Graphics::HighResFontOverlay directly
+	 * onto _hwScreen, at the point in internUpdateScreen() where the
+	 * scaled game surface has already been blitted but nothing has
+	 * been presented to the display yet (mirroring drawOSD()'s
+	 * placement) -- so it works whether this build presents via the
+	 * SDL_Flip() software path or the SDL_RenderPresent() path, and so
+	 * the overlay pixels are part of the same frame, not one behind.
+	 * A no-op if the high-res font subsystem is unused/inactive.
+	 */
+	void drawHighResFontOverlay();
+
 	class AspectRatio {
 		int _kw, _kh;
 	public:

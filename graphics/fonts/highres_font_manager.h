@@ -86,6 +86,16 @@ public:
 	/** Renders every registered overlay's queued text onto 'dst' in one call. */
 	void renderActiveOverlays(Graphics::Surface *dst);
 
+	/**
+	 * Applies the given native/logical scale factors to every
+	 * registered overlay. Backends call this once, right before
+	 * renderActiveOverlays(), with the *current* native-surface vs.
+	 * logical-game-resolution ratio -- never a value cached from an
+	 * earlier frame, since the window can be resized or fullscreen can
+	 * be toggled between frames.
+	 */
+	void setScaleFactorsForAll(float scaleX, float scaleY);
+
 	/** Clears every registered overlay's pending (not yet rendered) queue. */
 	void clearAllQueues();
 

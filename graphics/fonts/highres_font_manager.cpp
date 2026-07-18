@@ -60,6 +60,14 @@ void HighResFontManager::renderActiveOverlays(Graphics::Surface *dst) {
 	}
 }
 
+void HighResFontManager::setScaleFactorsForAll(float scaleX, float scaleY) {
+	for (Common::HashMap<Common::String, Common::SharedPtr<HighResFontOverlay> >::iterator it = _overlays.begin();
+			it != _overlays.end(); ++it) {
+		if (it->_value)
+			it->_value->setScaleFactors(scaleX, scaleY);
+	}
+}
+
 void HighResFontManager::clearAllQueues() {
 	for (Common::HashMap<Common::String, Common::SharedPtr<HighResFontOverlay> >::iterator it = _overlays.begin();
 			it != _overlays.end(); ++it) {

@@ -37,6 +37,7 @@
 #include "graphics/blit.h"
 #include "graphics/font.h"
 #include "graphics/fontman.h"
+#include "graphics/fonts/highres_font_manager.h"
 #include "graphics/scaler.h"
 #include "graphics/scaler/aspect.h"
 #include "graphics/surface.h"
@@ -1475,6 +1476,8 @@ void SurfaceSdlGraphicsManager::internUpdateScreen() {
 		drawOSD();
 #endif
 
+		drawHighResFontOverlay();
+
 #ifdef USE_SDL_DEBUG_FOCUSRECT
 		// We draw the focus rectangle on top of everything, to assure it's easily visible.
 		// Of course when the GUI overlay is visible we do not show it, since it is only for game
@@ -2846,6 +2849,35 @@ void SurfaceSdlGraphicsManager::drawOSD() {
 }
 
 #endif
+
+void SurfaceSdlGraphicsManager::drawHighResFontOverlay() {
+	// Dynamic resolution: the native/logical scale ratio is computed
+	// fresh every call from the backend's *current* state, never
+	// hardcoded, since the window can be resized or toggled to
+	// fullscreen between frames.
+	if (_videoMode.screenWidth <= 0 || _videoMode.screenHeight <= 0 || !_hwScreen)
+		return;
+
+	const float scaleX = (float)_hwScreen->w / (float)_videoMode.screenWidth;
+	const float scaleY = (float)_hwScreen->h / (float)_videoMode.screenHeight;
+	Graphics::HighResFontManager::instance().setScaleFactorsForAll(scaleX, scaleY);
+
+	const uint32 profileStart = SDL_GetTicks();
+
+	if (SDL_LockSurface(_hwScreen) == 0) {
+		Graphics::PixelFormat format = convertSDLPixelFormat(_hwScreen->format);
+		Graphics::Surface nativeSurface;
+		nativeSurface.init(_hwScreen->w, _hwScreen->h, _hwScreen->pitch, _hwScreen->pixels, format);
+
+		Graphics::HighResFontManager::instance().renderActiveOverlays(&nativeSurface);
+
+		SDL_UnlockSurface(_hwScreen);
+	}
+
+	const uint32 elapsed = SDL_GetTicks() - profileStart;
+	if (elapsed > 5)
+		warning("SurfaceSdlGraphicsManager::drawHighResFontOverlay: compositing took %u ms (>5ms budget)", elapsed);
+}
 
 void SurfaceSdlGraphicsManager::handleResizeImpl(const int width, const int height) {
 	SdlGraphicsManager::handleResizeImpl(width, height);
