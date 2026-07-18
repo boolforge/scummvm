@@ -18,6 +18,9 @@ MODULE_OBJS := \
 	fonts/consolefont.o \
 	fonts/dosfont.o \
 	fonts/freetype.o \
+	fonts/glyph_atlas.o \
+	fonts/highres_font_manager.o \
+	fonts/highres_font_overlay.o \
 	fonts/macfont.o \
 	fonts/newfont_big.o \
 	fonts/newfont.o \
