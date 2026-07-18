@@ -10,7 +10,8 @@ TESTS        := $(srcdir)/test/common/*.h \
 	$(srcdir)/test/common/formats/*.h \
 	$(srcdir)/test/audio/*.h \
 	$(srcdir)/test/math/*.h \
-	$(srcdir)/test/image/*.h
+	$(srcdir)/test/image/*.h \
+	$(srcdir)/test/graphics/highres_font_overlay.h
 TEST_LIBS    :=
 
 ifdef POSIX
@@ -20,7 +21,8 @@ TEST_LIBS += test/system/null_osystem.o \
 	backends/fs/posix/posix-iostream.o \
 	backends/fs/abstract-fs.o \
 	backends/fs/stdiostream.o \
-	backends/modular-backend.o
+	backends/modular-backend.o \
+	common/zip-set.o
 endif
 
 ifdef WIN32
