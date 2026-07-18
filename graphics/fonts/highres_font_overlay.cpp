@@ -39,11 +39,27 @@ namespace Graphics {
 namespace {
 
 /**
- * Alpha-blends a single glyph coverage sample at (x, y). For CLUT8
- * destinations this can only threshold (matching the same documented
- * limitation graphics/fonts/ttf.cpp itself accepts for indexed-color
- * surfaces), since there is no anti-aliasing ramp to blend against in
- * an arbitrary, unknown palette.
+ * Alpha-blends a single glyph coverage sample at (x, y).
+ *
+ * Two destination kinds are supported, because this same blit code
+ * backs both the SurfaceSDL backend (which blends directly onto the
+ * already-composited, fully opaque final frame -- no alpha channel
+ * involved) and the OpenGL backend (which renders onto an
+ * intermediate, separately-alpha-blended texture surface, so the
+ * *coverage itself* must survive as this surface's real alpha channel
+ * for the GPU's own blending to composite it correctly later):
+ *
+ * - Destination format has an alpha channel: write coverage straight
+ *   through as that pixel's alpha (with the requested ink color as
+ *   RGB), rather than blending against whatever this intermediate
+ *   surface's existing contents are. Blending here and *again* on the
+ *   GPU would double-attenuate partially-covered glyph edges.
+ * - Destination format has no alpha channel (or is CLUT8): blend
+ *   directly against the existing destination pixel, exactly as
+ *   before. CLUT8 can still only threshold (matching the same
+ *   documented limitation graphics/fonts/ttf.cpp itself accepts for
+ *   indexed-color surfaces), since there is no anti-aliasing ramp to
+ *   blend against in an arbitrary, unknown palette.
  */
 void blendCoverageSample(Graphics::Surface *dst, int x, int y, uint8 coverage, uint8 r, uint8 g, uint8 b) {
 	if (coverage == 0)
@@ -56,6 +72,24 @@ void blendCoverageSample(Graphics::Surface *dst, int x, int y, uint8 coverage, u
 	if (format.isCLUT8()) {
 		if (coverage >= 0x80)
 			*(uint8 *)dst->getBasePtr(x, y) = (uint8)format.RGBToColor(r, g, b);
+		return;
+	}
+
+	if (format.aBits() > 0) {
+		// Straight (non-premultiplied) alpha: let whatever composites
+		// this surface next (a GPU blend against the game texture) do
+		// the actual blending, exactly once.
+		uint32 outColor = format.ARGBToColor(coverage, r, g, b);
+		switch (format.bytesPerPixel) {
+		case 2:
+			*(uint16 *)dst->getBasePtr(x, y) = (uint16)outColor;
+			break;
+		case 4:
+			*(uint32 *)dst->getBasePtr(x, y) = outColor;
+			break;
+		default:
+			break;
+		}
 		return;
 	}
 

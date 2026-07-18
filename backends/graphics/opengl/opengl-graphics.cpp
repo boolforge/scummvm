@@ -46,6 +46,7 @@
 #endif
 
 #include "graphics/blit.h"
+#include "graphics/fonts/highres_font_manager.h"
 #ifdef USE_OSD
 #include "graphics/fontman.h"
 #include "graphics/font.h"
@@ -100,6 +101,7 @@ OpenGLGraphicsManager::OpenGLGraphicsManager()
 }
 
 OpenGLGraphicsManager::~OpenGLGraphicsManager() {
+	delete _highResOverlaySurface;
 	delete _gameScreen;
 #if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
 	delete _renderer3d;
@@ -941,6 +943,8 @@ void OpenGLGraphicsManager::updateScreen() {
 	}
 #endif
 
+	drawHighResFontOverlay();
+
 	_cursorNeedsRedraw = false;
 	_forceRedraw = false;
 	refreshScreen();
@@ -1408,6 +1412,56 @@ void OpenGLGraphicsManager::osdMessageUpdateSurface() {
 	_osdMessageChangeRequest = false;
 }
 #endif
+
+void OpenGLGraphicsManager::drawHighResFontOverlay() {
+	if (!_gameScreen || _gameDrawRect.width() <= 0 || _gameDrawRect.height() <= 0)
+		return;
+
+	const int targetWidth = _gameDrawRect.width();
+	const int targetHeight = _gameDrawRect.height();
+
+	// Recreated whenever the on-screen game rectangle changes size
+	// (window resize, fullscreen toggle, aspect-ratio change), the same
+	// way _osdMessageSurface is recreated per message rather than
+	// resized in place.
+	if (!_highResOverlaySurface || _highResOverlaySurfaceWidth != targetWidth || _highResOverlaySurfaceHeight != targetHeight) {
+		delete _highResOverlaySurface;
+		_highResOverlaySurface = nullptr;
+
+		_highResOverlaySurface = createSurface(_defaultFormatAlpha, true);
+		assert(_highResOverlaySurface);
+		_highResOverlaySurface->enableLinearFiltering(true);
+		_highResOverlaySurface->setRotation(_rotationMode);
+		_highResOverlaySurface->allocate(targetWidth, targetHeight);
+
+		_highResOverlaySurfaceWidth = targetWidth;
+		_highResOverlaySurfaceHeight = targetHeight;
+	}
+
+	Graphics::Surface *dst = _highResOverlaySurface->getSurface();
+	// Fully transparent: only pixels a glyph actually covers should
+	// obscure the game art underneath once this is GPU-blended in.
+	dst->fillRect(Common::Rect(0, 0, dst->w, dst->h), dst->format.ARGBToColor(0, 0, 0, 0));
+
+	// Dynamic resolution: computed fresh from the *current* on-screen
+	// game rectangle versus the logical game surface size, never
+	// hardcoded or cached from an earlier frame.
+	const float scaleX = (float)targetWidth / (float)_gameScreen->getWidth();
+	const float scaleY = (float)targetHeight / (float)_gameScreen->getHeight();
+	Graphics::HighResFontManager::instance().setScaleFactorsForAll(scaleX, scaleY);
+
+	const uint32 profileStart = g_system->getMillis();
+	Graphics::HighResFontManager::instance().renderActiveOverlays(dst);
+	const uint32 elapsed = g_system->getMillis() - profileStart;
+	if (elapsed > 5)
+		warning("OpenGLGraphicsManager::drawHighResFontOverlay: compositing took %u ms (>5ms budget)", elapsed);
+
+	_highResOverlaySurface->updateGLTexture();
+
+	_targetBuffer->enableBlend(Framebuffer::kBlendModeTraditionalTransparency);
+	_pipeline->drawTexture(_highResOverlaySurface->getGLTexture(),
+		_gameDrawRect.left, _gameDrawRect.top, targetWidth, targetHeight);
+}
 
 void OpenGLGraphicsManager::displayActivityIconOnOSD(const Graphics::Surface *icon) {
 #ifdef USE_OSD

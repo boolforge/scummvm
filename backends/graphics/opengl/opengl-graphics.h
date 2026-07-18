@@ -511,6 +511,27 @@ private:
 	Surface *_osdMessageSurface;
 
 	/**
+	 * CPU-rendered, then GL-texture-uploaded, surface used to composite
+	 * every active Graphics::HighResFontOverlay. Recreated whenever its
+	 * size no longer matches _gameDrawRect (window resize, fullscreen
+	 * toggle, aspect-ratio change), analogous to how _osdMessageSurface
+	 * is recreated per message rather than resized in place.
+	 */
+	Surface *_highResOverlaySurface = nullptr;
+	int _highResOverlaySurfaceWidth = 0;
+	int _highResOverlaySurfaceHeight = 0;
+
+	/**
+	 * Composites every active Graphics::HighResFontOverlay onto
+	 * _highResOverlaySurface (sized and positioned to exactly match
+	 * _gameDrawRect, the same on-screen rectangle the scaled game
+	 * texture itself is drawn into) and draws it as a single alpha-
+	 * blended textured quad. A no-op if the high-res font subsystem is
+	 * unused/inactive.
+	 */
+	void drawHighResFontOverlay();
+
+	/**
 	 * Current opacity level of the OSD message.
 	 */
 	uint8 _osdMessageAlpha;
