@@ -25,6 +25,8 @@
 #include "common/unicode-bidi.h"
 #include "audio/mixer.h"
 
+#include "graphics/fonts/highres_font_overlay.h"
+
 #include "scumm/actor.h"
 #include "scumm/charset.h"
 #include "scumm/dialogs.h"
@@ -1469,6 +1471,52 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 		}
 	}
 
+	// --- High-resolution vector font overlay interception ---------------
+	// Only intercept "plain" runs of text: strings carrying embedded
+	// SCUMM formatting opcodes (color changes, forced newlines, HE
+	// overlay markers) or multi-byte CJK sequences involve mid-string
+	// state changes that this deferred pipeline does not model, so
+	// those always fall back to the original per-character raster path
+	// below, exactly as if the feature were disabled.
+	bool handledByHighResOverlay = false;
+	if (_highResFontsEnabledLastFrame && _highResOverlay && _highResOverlay->isActive() && buf[0]) {
+		bool plainRun = true;
+		for (int j = 0; buf[j] != 0; ++j) {
+			byte cc = buf[j];
+			if ((_game.heversion >= 72 && cc == code) ||
+				((cc == 0xFF || (_game.version <= 6 && cc == 0xFE)) && _game.heversion <= 71) ||
+				((cc & 0x80) != 0 && _useCJKMode)) {
+				plainRun = false;
+				break;
+			}
+		}
+
+		if (plainRun) {
+			const int width = _charset->getStringWidth(a, buf);
+			const byte colorIdx = _charset->getColor();
+			const uint32 rgb = ((uint32)_currentPalette[colorIdx * 3 + 0] << 16) |
+				((uint32)_currentPalette[colorIdx * 3 + 1] << 8) |
+				(uint32)_currentPalette[colorIdx * 3 + 2];
+
+			if (_highResOverlay->enqueueText(Common::String((const char *)buf),
+					Common::Point(_charset->_left, _charset->_top), width, rgb)) {
+				// Replicate the bounding-box/pen-advance bookkeeping the
+				// per-character loop below would have produced, so the
+				// trailing code (continuation strings, save-name entry
+				// fields, etc.) keeps working even though no raster
+				// pixels were actually touched for this string.
+				_charset->_str.left = MIN(_charset->_str.left, (int16)_charset->_left);
+				_charset->_str.top = _charset->_top;
+				_charset->_str.right = _charset->_left + width;
+				_charset->_str.bottom = _charset->_top + _charset->getFontHeight();
+				_charset->_left += width;
+				handledByHighResOverlay = true;
+			}
+		}
+	}
+	// --- End high-resolution vector font overlay interception ------------
+
+	if (!handledByHighResOverlay)
 	for (i = 0; (c = buf[i++]) != 0;) {
 		if (_game.heversion >= 72 && c == code) {
 			c = buf[i++];
