@@ -1026,7 +1026,7 @@ Common::Error ScummEngine::init() {
 	// asset is loaded exactly once, here during init(), never on the
 	// main game loop's hot path.
 	ConfMan.registerDefault("highres_fonts", false);
-	ConfMan.registerDefault("highres_font_path", "FreeSans.ttf");
+	ConfMan.registerDefault("highres_font_path", "LiberationSans-Regular.ttf");
 	ConfMan.registerDefault("highres_font_point_size", 18);
 	_highResFontsEnabledLastFrame = ConfMan.getBool("highres_fonts", _targetName);
 	if (_highResFontsEnabledLastFrame) {

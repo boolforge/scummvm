@@ -35,6 +35,10 @@ HighResFontManager::~HighResFontManager() {
 }
 
 HighResFontOverlay *HighResFontManager::loadFont(const FontConfig &config) {
+	if (config.id.empty())
+		warning("HighResFontManager::loadFont: called with an empty id; this overlay will collide with "
+			"any other caller that also passes an empty id");
+
 	Common::HashMap<Common::String, Common::SharedPtr<HighResFontOverlay> >::iterator it = _overlays.find(config.id);
 	if (it != _overlays.end())
 		return it->_value.get();

@@ -144,6 +144,13 @@ bool GlyphAtlas::rasterizeAndPack(uint32 chr, const Font *font, GlyphInfo &info)
 }
 
 bool GlyphAtlas::getGlyph(uint32 chr, const Font *font, GlyphInfo &info) {
+	if (!font) {
+		// Should be unreachable in practice (HighResFontOverlay only
+		// ever calls this while _font is set), but a cache class with
+		// its own public API should not assume its caller never slips.
+		return false;
+	}
+
 	Common::HashMap<uint32, GlyphInfo>::iterator it = _cache.find(chr);
 	if (it != _cache.end()) {
 		info = it->_value;

@@ -138,6 +138,18 @@ bool HighResFontOverlay::loadTrueTypeFont(const Common::String &fontPath, int ba
 	_atlas.reset();
 #endif
 
+	// A stray or corrupt config value (0, negative, or absurdly large)
+	// should degrade to a sane size rather than misbehave -- FreeType's
+	// own behavior for a non-positive size is unspecified, and nothing
+	// in this pipeline needs to support a font too small to read or
+	// large enough to blow the atlas's fixed budget on one glyph.
+	if (basePointSize < 4 || basePointSize > 128) {
+		int clamped = CLIP(basePointSize, 4, 128);
+		warning("HighResFontOverlay: requested point size %d out of sane range, using %d instead",
+			basePointSize, clamped);
+		basePointSize = clamped;
+	}
+
 #ifndef USE_FREETYPE2
 	debug(1, "HighResFontOverlay: built without USE_FREETYPE2; high-resolution fonts are unavailable, falling back to raster rendering");
 	return false;
@@ -257,8 +269,11 @@ void HighResFontOverlay::renderQueuedText(const QueuedText &entry, Graphics::Sur
 	const uint8 b = (uint8)(entry.color & 0xFF);
 
 	// legacy_w: what the original raster font would have occupied,
-	// scaled to native resolution.
-	const float legacyWidthNative = entry.targetWidth * _scaleX;
+	// scaled to native resolution. A negative or otherwise nonsensical
+	// caller-supplied width is clamped to zero rather than propagated,
+	// since it would otherwise flip the sign of the kerning adjustment
+	// below in a way no legitimate caller intends.
+	const float legacyWidthNative = MAX(entry.targetWidth, 0) * _scaleX;
 
 	// vector_w: the natural width of the same run set in the vector
 	// font, plus the character count needed for the kerning divisor.
