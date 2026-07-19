@@ -49,6 +49,20 @@ HighResFontOverlay *HighResFontManager::loadFont(const FontConfig &config) {
 	return overlay.get();
 }
 
+HighResFontOverlay *HighResFontManager::registerOverlay(const Common::String &id) {
+	if (id.empty())
+		warning("HighResFontManager::registerOverlay: called with an empty id; this overlay will collide with "
+			"any other caller that also passes an empty id");
+
+	Common::HashMap<Common::String, Common::SharedPtr<HighResFontOverlay> >::iterator it = _overlays.find(id);
+	if (it != _overlays.end())
+		return it->_value.get();
+
+	Common::SharedPtr<HighResFontOverlay> overlay(new HighResFontOverlay());
+	_overlays[id] = overlay;
+	return overlay.get();
+}
+
 HighResFontOverlay *HighResFontManager::getOverlay(const Common::String &id) const {
 	Common::HashMap<Common::String, Common::SharedPtr<HighResFontOverlay> >::const_iterator it = _overlays.find(id);
 	if (it == _overlays.end())

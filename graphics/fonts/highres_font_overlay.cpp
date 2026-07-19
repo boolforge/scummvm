@@ -120,6 +120,23 @@ void blendCoverageSample(Graphics::Surface *dst, int x, int y, uint8 coverage, u
 	}
 }
 
+/**
+ * A stray or corrupt config value (0, negative, or absurdly large)
+ * should degrade to a sane size rather than misbehave -- FreeType's
+ * own behavior for a non-positive size is unspecified, and nothing in
+ * this pipeline needs to support a font too small to read or large
+ * enough to blow the atlas's fixed budget on one glyph.
+ */
+int clampPointSize(int basePointSize) {
+	if (basePointSize < 4 || basePointSize > 128) {
+		int clamped = CLIP(basePointSize, 4, 128);
+		warning("HighResFontOverlay: requested point size %d out of sane range, using %d instead",
+			basePointSize, clamped);
+		return clamped;
+	}
+	return basePointSize;
+}
+
 } // End of anonymous namespace
 
 HighResFontOverlay::HighResFontOverlay() :
@@ -138,17 +155,7 @@ bool HighResFontOverlay::loadTrueTypeFont(const Common::String &fontPath, int ba
 	_atlas.reset();
 #endif
 
-	// A stray or corrupt config value (0, negative, or absurdly large)
-	// should degrade to a sane size rather than misbehave -- FreeType's
-	// own behavior for a non-positive size is unspecified, and nothing
-	// in this pipeline needs to support a font too small to read or
-	// large enough to blow the atlas's fixed budget on one glyph.
-	if (basePointSize < 4 || basePointSize > 128) {
-		int clamped = CLIP(basePointSize, 4, 128);
-		warning("HighResFontOverlay: requested point size %d out of sane range, using %d instead",
-			basePointSize, clamped);
-		basePointSize = clamped;
-	}
+	basePointSize = clampPointSize(basePointSize);
 
 #ifndef USE_FREETYPE2
 	debug(1, "HighResFontOverlay: built without USE_FREETYPE2; high-resolution fonts are unavailable, falling back to raster rendering");
@@ -180,6 +187,42 @@ bool HighResFontOverlay::loadTrueTypeFont(const Common::String &fontPath, int ba
 	_isInitialized = true;
 
 	debug(1, "HighResFontOverlay: loaded '%s' at %d pt", fontPath.c_str(), basePointSize);
+	return true;
+#endif
+}
+
+bool HighResFontOverlay::loadTrueTypeFont(Common::SeekableReadStream *stream, DisposeAfterUse::Flag dispose, int basePointSize) {
+	_isInitialized = false;
+	_font.reset();
+#ifdef USE_FREETYPE2
+	_atlas.reset();
+#endif
+
+	if (!stream) {
+		debug(1, "HighResFontOverlay: loadTrueTypeFont() called with a null stream; falling back to raster rendering");
+		return false;
+	}
+
+	basePointSize = clampPointSize(basePointSize);
+
+#ifndef USE_FREETYPE2
+	if (dispose == DisposeAfterUse::YES)
+		delete stream;
+	debug(1, "HighResFontOverlay: built without USE_FREETYPE2; high-resolution fonts are unavailable, falling back to raster rendering");
+	return false;
+#else
+	Font *font = Graphics::loadTTFFont(stream, dispose, basePointSize);
+	if (!font) {
+		debug(1, "HighResFontOverlay: could not parse TTF data from stream at size %d; falling back to raster rendering", basePointSize);
+		return false;
+	}
+
+	_font.reset(font);
+	_atlas.reset(new GlyphAtlas());
+	_fontPointSize = basePointSize;
+	_isInitialized = true;
+
+	debug(1, "HighResFontOverlay: loaded font from stream at %d pt", basePointSize);
 	return true;
 #endif
 }

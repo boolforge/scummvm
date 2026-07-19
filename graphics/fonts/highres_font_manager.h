@@ -80,6 +80,21 @@ public:
 	 */
 	HighResFontOverlay *loadFont(const FontConfig &config);
 
+	/**
+	 * Returns the overlay registered under 'id', creating an empty
+	 * (not yet loaded, therefore inactive) one first if this is the
+	 * first request for that id. For callers that need to load a font
+	 * themselves -- e.g. via HighResFontOverlay's stream-based
+	 * loadTrueTypeFont() overload, because their engine resolves font
+	 * data through its own resource/archive system rather than a
+	 * filesystem path -- rather than through loadFont()'s
+	 * FontConfig/path-based path.
+	 *
+	 * @return A non-owning pointer, same lifetime contract as loadFont().
+	 *         Never null.
+	 */
+	HighResFontOverlay *registerOverlay(const Common::String &id);
+
 	/** Looks up a previously loaded overlay by id, or nullptr if none was requested. */
 	HighResFontOverlay *getOverlay(const Common::String &id) const;
 

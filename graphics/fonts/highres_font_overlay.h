@@ -30,6 +30,8 @@
 #include "common/ptr.h"
 #include "common/mutex.h"
 #include "common/noncopyable.h"
+#include "common/stream.h"
+#include "common/types.h"
 
 namespace Graphics {
 
@@ -94,6 +96,24 @@ public:
 	 *         the legacy raster path.
 	 */
 	bool loadTrueTypeFont(const Common::String &fontPath, int basePointSize);
+
+	/**
+	 * Unicode-native counterpart of loadTrueTypeFont(const Common::String&, ...)
+	 * for engines that resolve font data through their own resource or
+	 * archive system rather than a filesystem path or ScummVM's bundled
+	 * theme/font archive (BladeRunner's MIX-file resources, for
+	 * instance). Takes an already-open stream directly: this class does
+	 * not need to know how any particular engine's resource lookup
+	 * works, only how to hand a stream to Graphics::loadTTFFont().
+	 *
+	 * @param stream        An already-open stream positioned at the
+	 *                      start of TTF/OTF font data.
+	 * @param dispose       Whether this call takes ownership of 'stream'
+	 *                      (matching Graphics::loadTTFFont()'s own
+	 *                      contract).
+	 * @param basePointSize Point size to rasterize at.
+	 */
+	bool loadTrueTypeFont(Common::SeekableReadStream *stream, DisposeAfterUse::Flag dispose, int basePointSize);
 
 	/** True if a font was loaded successfully and this overlay can be used. */
 	bool isActive() const;
