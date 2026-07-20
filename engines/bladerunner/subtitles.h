@@ -30,6 +30,7 @@
 
 namespace Graphics {
 class Font;
+class HighResFontOverlay;
 }
 
 namespace BladeRunner {
@@ -123,6 +124,7 @@ class Subtitles {
 	TextResource  *_vqaSubsTextResourceEntries[kMaxTextResourceEntries];
 
 	Graphics::Font *_font;
+	Graphics::HighResFontOverlay *_highResOverlay = nullptr;
 	bool            _useUTF8;
 	bool            _useHDC;
 	Common::Array<Common::String>       _subtitlesEXC;

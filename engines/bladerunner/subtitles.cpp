@@ -28,10 +28,13 @@
 #include "bladerunner/time.h"
 
 #include "common/debug.h"
+#include "common/config-manager.h"
 #include "common/unicode-bidi.h"
 
 #include "graphics/font.h"
 #include "graphics/fonts/ttf.h"
+#include "graphics/fonts/highres_font_manager.h"
+#include "graphics/fonts/highres_font_overlay.h"
 
 namespace BladeRunner {
 
@@ -261,6 +264,25 @@ void Subtitles::init(void) {
 		Common::SeekableReadStream *stream = _vm->getResourceStream(_subtitlesInfo.fontName);
 		_font = Graphics::loadTTFFont(stream, DisposeAfterUse::YES, 18);
 		_useUTF8 = true;
+
+		// High-resolution vector font overlay (font modernization RFC),
+		// opt-in and disabled by default, same as the SCUMM integration.
+		// This loads a *separate* Font instance for the overlay's own
+		// rendering rather than reusing _font above: _font's metrics
+		// (getStringWidth(), wordWrapText()) are relied on for layout
+		// regardless of whether the overlay is active, so leaving that
+		// path untouched and adding a second loaded instance purely for
+		// the high-res pixel output is safer than trying to share one
+		// Font between two different consumers of its lifetime.
+		ConfMan.registerDefault("highres_fonts", false);
+		if (ConfMan.getBool("highres_fonts")) {
+			_highResOverlay = HighResFontMan.registerOverlay("bladerunner_subtitles");
+			if (!_highResOverlay->isActive()) {
+				Common::SeekableReadStream *overlayStream = _vm->getResourceStream(_subtitlesInfo.fontName);
+				if (overlayStream)
+					_highResOverlay->loadTrueTypeFont(overlayStream, DisposeAfterUse::YES, 18);
+			}
+		}
 #else
 		warning("Subtitles require a TTF font but this ScummVM build doesn't support it.");
 		return;
@@ -658,15 +680,42 @@ void Subtitles::draw(Graphics::Surface &s) {
 					// shadow/outline is part of the font color data
 					_font->drawString(&s, _subtitlesDataActive[i].lines[j], 0, y, s.w, 0, Graphics::kTextAlignCenter);
 					break;
-				case Subtitles::kSubtitlesFontTypeTTF:
+				case Subtitles::kSubtitlesFontTypeTTF: {
 					Common::U32String line32 = Common::convertBiDiU32String(_subtitlesDataActive[i].lines32[j]).visual;
-					_font->drawString(&s, line32, -1, y    , s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
-					_font->drawString(&s, line32,  0, y - 1, s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
-					_font->drawString(&s, line32,  1, y    , s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
-					_font->drawString(&s, line32,  0, y + 1, s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
 
-					_font->drawString(&s, line32,  0, y    , s.w, s.format.RGBToColor(255, 255, 255), Graphics::kTextAlignCenter);
+					bool handledByHighResOverlay = false;
+					if (_highResOverlay && _highResOverlay->isActive() && !line32.empty()) {
+						// Centering replicates Font::drawString()'s own
+						// formula (x + (w - width) / 2) exactly, since
+						// this pipeline needs the left edge explicitly
+						// rather than deferring to kTextAlignCenter.
+						// originalRasterWidth is the string's own
+						// natural width, not a legacy-bitmap width to
+						// match: this engine already draws via TTF, so
+						// there is nothing to stretch/squeeze against,
+						// only the upscale-blur to avoid.
+						const int stringWidth = _font->getStringWidth(line32);
+						const int centerLeft = (s.w - stringWidth) / 2;
+
+						bool ok = true;
+						ok = ok && _highResOverlay->enqueueText(line32, Common::Point(centerLeft - 1, y),     stringWidth, 0x00000000);
+						ok = ok && _highResOverlay->enqueueText(line32, Common::Point(centerLeft,     y - 1), stringWidth, 0x00000000);
+						ok = ok && _highResOverlay->enqueueText(line32, Common::Point(centerLeft + 1, y),     stringWidth, 0x00000000);
+						ok = ok && _highResOverlay->enqueueText(line32, Common::Point(centerLeft,     y + 1), stringWidth, 0x00000000);
+						ok = ok && _highResOverlay->enqueueText(line32, Common::Point(centerLeft,     y),     stringWidth, 0x00FFFFFF);
+						handledByHighResOverlay = ok;
+					}
+
+					if (!handledByHighResOverlay) {
+						_font->drawString(&s, line32, -1, y    , s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
+						_font->drawString(&s, line32,  0, y - 1, s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
+						_font->drawString(&s, line32,  1, y    , s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
+						_font->drawString(&s, line32,  0, y + 1, s.w, s.format.RGBToColor(  0,   0,   0), Graphics::kTextAlignCenter);
+
+						_font->drawString(&s, line32,  0, y    , s.w, s.format.RGBToColor(255, 255, 255), Graphics::kTextAlignCenter);
+					}
 					break;
+				}
 				}
 			}
 		}
