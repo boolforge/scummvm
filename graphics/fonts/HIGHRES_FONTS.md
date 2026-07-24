@@ -119,13 +119,65 @@ any one engine's debug enum.
 | `android`, `atari`, `dc`, `ios`/`ios7`, `n64`, `psp`, `psp2`, `3ds`, `switch`, `wii`, `samsungtv` | **Not attempted.** These require cross-compilation toolchains and platform SDKs (devkitARM/devkitPro, PSP/PSP2 SDKs, a Dreamcast KOS toolchain, etc.) that are not present in this environment, and several render through entirely different, platform-specific 2D/3D APIs rather than SDL or this codebase's own OpenGL wrapper. Writing composition code for them here would not be compiled or checked in any way -- pure guesswork rather than the same empirically-verified engineering as the rest of this document. A contributor with access to the relevant SDK should follow the same pattern as the OpenGL hook (render to an intermediate alpha surface sized to the game's on-screen rectangle, then composite it as a blended textured quad/sprite through that platform's native draw call) as a starting point. |
 | `null` | Not applicable -- headless, no screen to composite onto. |
 
+## Engines already using Graphics::Font/TTF directly
 
+A number of engines (agds, buried, glk, gnap, grim, mohawk, mtropolis,
+myst3, neverhood, petka, phoenixvr, pink, vcruise, in addition to
+bladerunner) already call loadTTFFont()/loadTTFFontFromArchive()
+directly, which makes them structurally closer to a "just hook the
+existing draw call" migration than SCUMM's was. That does not mean
+every one of them needs or benefits from migrating, though:
 
-The RFC that motivated this work names BladeRunner's subtitle renderer
-(`engines/bladerunner/subtitles.cpp`) as the next natural candidate, since
-it already loads its own isolated `loadTTFFontFromArchive()` font
-independent of the shared `Graphics::FontManager`. Checklist for migrating
-any engine's own ad hoc TTF usage onto this shared pipeline:
+- **myst3 does not need this and should not be migrated as-is.**
+  `FontSubtitles::drawToTexture()` (engines/myst3/subtitles.cpp)
+  already recomputes the display/original-resolution scale ratio every
+  time it draws, and when that ratio changes it deletes and reloads
+  the font at the new scale and recreates its texture at the new size
+  -- i.e. it already renders directly at whatever the current display
+  scale is, with no fixed low-resolution intermediate surface for an
+  upscale filter to blur. There is no upscale-blur problem here for
+  this pipeline to solve, and forcing this engine onto it would add
+  complexity (a second loaded font instance, kerning math meant to
+  match a legacy raster width that does not exist here) with no
+  visible benefit, and a real risk of interacting badly with myst3's
+  own existing rescaling logic. Checked by reading the actual
+  drawToTexture() implementation, not assumed from the class using
+  Graphics::Font.
+- **mtropolis is a plausible candidate, not yet confirmed either way.**
+  Its Subtitles class (engines/mtropolis/subtitles.cpp) loads a TTF
+  font once and draws directly onto a Graphics::ManagedSurface that
+  gets blitted onto a `Window`'s own surface -- but whether that
+  Window's surface is a fixed logical resolution (this pipeline's
+  target case) or something already scale-aware the way myst3's is
+  was not resolved before this pass ended. Needs the same "read the
+  actual resolution/scaling model before writing any code" treatment
+  the SCUMM, BladeRunner, and myst3 investigations all got, not an
+  assumption in either direction.
+- SCI's text rendering (engines/sci/graphics/text16.cpp, ~1000 lines)
+  was surveyed and found substantially more complex than either prior
+  migration: it uses SCI's own internal GfxFont bitmap-font class
+  hierarchy rather than Graphics::Font directly (a Graphics::Font-based
+  path only exists for its separate Mac-font rendering mode), has an
+  in-band `|code|` control-code format for color/font changes plus a
+  distinct `|r|` "reference rectangle" code used for interactive
+  hotspots in at least one game, and has version-specific
+  (SCI0/SCI01/SCI1) Shift-JIS punctuation handling for line-wrapping
+  that would need its own careful exclusion, the same way this project
+  excludes CJK elsewhere. None of this is a reason not to migrate SCI
+  eventually, but it is real enough additional scope (likely comparable
+  to the SCUMM migration's, not BladeRunner's) that it deserves its own
+  dedicated pass rather than being folded in alongside a faster-moving
+  survey of already-TTF-based engines.
+
+## Migrating another engine
+
+BladeRunner's subtitle renderer (`engines/bladerunner/subtitles.cpp`) has
+been migrated (see its own commit history for the specifics); it was
+picked first because, like the engines surveyed above, it already loaded
+its own isolated `loadTTFFontFromArchive()`/stream-based font independent
+of the shared `Graphics::FontManager`. Checklist for migrating any other
+engine's own ad hoc TTF (or, per SCUMM's example, non-TTF) text rendering
+onto this shared pipeline:
 
 1. Pick a stable, engine-specific id string (e.g. `"bladerunner_subtitles"`).
 2. Replace the engine's direct `Graphics::loadTTFFontFromArchive()`/manual
