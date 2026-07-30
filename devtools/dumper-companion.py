@@ -103,6 +103,7 @@ class FileSystem(Enum):
     hybrid = "hybrid"
     hfs = "hfs"
     iso9660 = "iso9660"
+    operafs = "operafs"
 
 
 class Extension(Enum):
@@ -365,6 +366,8 @@ def check_japanese(args: argparse.Namespace) -> bool:
         fn = extract_volume_hybrid
     elif args.fs == FileSystem.iso9660:
         fn = extract_volume_iso
+    elif args.fs == FileSystem.operafs:
+        fn = extract_volume_operafs
     else:
         fn = extract_volume_hfs
     try:
@@ -400,9 +403,55 @@ def check_extension(args: argparse.Namespace) -> Extension:
     return Extension.none
 
 
+def find_3do_offset(f) -> int | None:
+    """
+    Search for a 3DO (OperaFS) volume header.
+    Returns the byte offset of the volume header block, or None if not found.
+    """
+    # Fast check for common sectors: 0 and 150 (common for .nrg)
+    for sector in [0, 150]:
+        f.seek(sector * 2048)
+        header = f.read(2048)
+        if len(header) >= 0x30:
+            if header[0:7] == b"\x01ZZZZZ\x01" and header[0x28:0x28+6] == b"CD-ROM":
+                return sector * 2048
+
+    # Full scan block by block in 1MB chunks
+    f.seek(0, 2)
+    file_size = f.tell()
+    chunk_size = 1024 * 1024
+    f.seek(0)
+    offset = 0
+    while offset < file_size:
+        chunk = f.read(chunk_size)
+        if not chunk:
+            break
+        idx = 0
+        while True:
+            idx = chunk.find(b"\x01ZZZZZ\x01", idx)
+            if idx == -1:
+                break
+            abs_pos = offset + idx
+            if abs_pos % 2048 == 0:
+                if idx + 0x28 + 6 <= len(chunk):
+                    sig = chunk[idx + 0x28 : idx + 0x28 + 6]
+                else:
+                    f.seek(abs_pos + 0x28)
+                    sig = f.read(6)
+                if sig == b"CD-ROM":
+                    return abs_pos
+            idx += 1
+        offset += len(chunk)
+    return None
+
+
 def check_fs(iso: str) -> FileSystem:
     disk_formats = []
     f = open(iso, "rb")
+
+    # Check for 3DO (OperaFS)
+    if find_3do_offset(f) is not None:
+        disk_formats.append(FileSystem.operafs)
 
     # ISO Primary Volume Descriptor
     f.seek(64 * SECTOR_SIZE)
@@ -439,6 +488,8 @@ def check_fs(iso: str) -> FileSystem:
         # (mac_1 == b"LK" and mac_3 == b"BD") is only for bootable volumes
         disk_formats.append(FileSystem.hfs)
 
+    if not disk_formats:
+        raise ValueError("Could not detect any supported filesystem (HFS, ISO9660, or 3DO OperaFS)")
     if len(set(disk_formats)) > 1:
         return FileSystem.hybrid
     return disk_formats[0]
@@ -478,10 +529,230 @@ def convert_ccd_to_iso(img_path: Path, iso_path: Path) -> None:
                 raise ValueError(
                     f"Unsupported sector mode {mode}"
                 )
-            
+
+
+def convert_nrg_to_iso(nrg_path: Path, iso_path: Path) -> None:
+    """
+    Convert a Nero NRG image into an ISO image by stripping the 307200-byte pre-gap/lead-in.
+    """
+    with open(nrg_path, "rb") as src, open(iso_path, "wb") as dst:
+        src.seek(307200)
+        while chunk := src.read(1024 * 1024):
+            dst.write(chunk)
+
+
+def parse_cue(cue_path: Path) -> tuple[Path, str]:
+    """
+    Parse a CUE file to find the referenced BIN file and its track mode.
+    Returns a tuple of (bin_path, track_mode).
+    """
+    bin_filename = None
+    track_mode = "MODE1/2048"
+
+    with open(cue_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            file_match = re.match(r'^FILE\s+["\']?([^"\']+)["\']?\s+(\w+)', line, re.IGNORECASE)
+            if file_match:
+                bin_filename = file_match.group(1)
+            track_match = re.match(r'^TRACK\s+\d+\s+([\w/]+)', line, re.IGNORECASE)
+            if track_match:
+                track_mode = track_match.group(1).upper()
+
+    if not bin_filename:
+        raise ValueError("No FILE referenced in CUE file")
+
+    bin_path = cue_path.parent / bin_filename
+    if not bin_path.exists():
+        for p in cue_path.parent.iterdir():
+            if p.name.lower() == bin_filename.lower():
+                bin_path = p
+                break
+
+    return bin_path, track_mode
+
+
+def convert_bin_2352_to_2048(bin_path: Path, iso_path: Path, track_mode: str) -> None:
+    """
+    Convert a 2352-byte sector BIN/IMG file into a 2048-byte sector ISO.
+    """
+    data_offset = 16
+    if "MODE2" in track_mode:
+        data_offset = 24
+
+    with open(bin_path, "rb") as src, open(iso_path, "wb") as dst:
+        while chunk := src.read(2352):
+            if len(chunk) != 2352:
+                break
+            dst.write(chunk[data_offset : data_offset + 2048])
+
+
+def convert_pc98_fdi_to_img(fdi_path: Path, img_path: Path) -> None:
+    """
+    Convert a PC-98 FDI floppy image into a raw sector image by stripping the FDI header.
+    """
+    header_size = 4096
+    with open(fdi_path, "rb") as src:
+        src.seek(28)
+        header_size_bytes = src.read(4)
+        if len(header_size_bytes) == 4:
+            val = unpack("<I", header_size_bytes)[0]
+            if val in [4096, 512, 1024, 2048]:
+                header_size = val
+
+        src.seek(header_size)
+        with open(img_path, "wb") as dst:
+            while chunk := src.read(1024 * 1024):
+                dst.write(chunk)
+
+
+def convert_pc98_hdi_to_img(hdi_path: Path, img_path: Path) -> None:
+    """
+    Convert a PC-98 HDI hard disk image into a raw sector image by stripping the HDI header.
+    """
+    header_size = 4096
+    with open(hdi_path, "rb") as src:
+        src.seek(8)
+        header_size_bytes = src.read(4)
+        if len(header_size_bytes) == 4:
+            val = unpack("<I", header_size_bytes)[0]
+            if val in [4096, 512, 1024, 2048]:
+                header_size = val
+
+        src.seek(header_size)
+        with open(img_path, "wb") as dst:
+            while chunk := src.read(1024 * 1024):
+                dst.write(chunk)
+
+
+def convert_d88_to_img(d88_path: Path, img_path: Path) -> None:
+    """
+    Convert a D88/D77 floppy disk image into a standard raw sector image (.img).
+    This handles multi-sector tracks, sorts sectors by ID, and writes raw sector data.
+    """
+    with open(d88_path, "rb") as src, open(img_path, "wb") as dst:
+        disk_header = src.read(32)
+        if len(disk_header) != 32:
+            raise ValueError("Incomplete D88 disk header")
+
+        offset_table_data = src.read(656)
+        if len(offset_table_data) < 640:
+            raise ValueError("Incomplete D88 offset table")
+
+        num_entries = len(offset_table_data) // 4
+        track_offsets = []
+        for i in range(num_entries):
+            off = unpack("<I", offset_table_data[i*4 : i*4+4])[0]
+            if off >= 672:
+                track_offsets.append(off)
+
+        track_offsets = sorted(list(set(track_offsets)))
+
+        for off in track_offsets:
+            src.seek(off)
+
+            sec_header = src.read(16)
+            if len(sec_header) != 16:
+                break
+
+            num_sectors = unpack("<H", sec_header[4:6])[0]
+
+            track_sectors = []
+            curr_pos = off
+
+            for _ in range(num_sectors):
+                src.seek(curr_pos)
+                h_data = src.read(16)
+                if len(h_data) != 16:
+                    break
+
+                c, h, r, n = h_data[0], h_data[1], h_data[2], h_data[3]
+                data_size = unpack("<H", h_data[14:16])[0]
+
+                payload = src.read(data_size)
+
+                track_sectors.append((r, payload))
+                curr_pos = src.tell()
+
+            track_sectors = sorted(track_sectors, key=lambda x: x[0])
+
+            for r, payload in track_sectors:
+                dst.write(payload)
+
+
 def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
+    temp_files_to_clean = []
     try:
+        # Handle PC-98 FDI, HDI, and D88 floppy/hard disk images
+        if args.src.exists() and args.src.suffix.lower() in [".fdi", ".hdi", ".d88", ".d77", ".88d"]:
+            if args.src.suffix.lower() == ".fdi":
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_pc98_fdi_to_img(args.src, temp_iso)
+                print(f"Stripped FDI header and saved raw disk sector image to {temp_iso}")
+            elif args.src.suffix.lower() == ".hdi":
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_pc98_hdi_to_img(args.src, temp_iso)
+                print(f"Stripped HDI header and saved raw disk sector image to {temp_iso}")
+            else:
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_d88_to_img(args.src, temp_iso)
+                print(f"Converted D88/D77 image to standard raw disk sector image {temp_iso}")
+
+            args.src = temp_iso
+            args.keep_files = True
+            print("Conversion completed successfully!")
+            return
+
+        # Check if the file is a DiskCopy 4.2 image
+        if args.src.exists() and args.src.stat().st_size >= 84:
+            with open(args.src, "rb") as dc_f:
+                dc_header = dc_f.read(84)
+                if len(dc_header) == 84 and dc_header[82:84] == b"\x01\x00":
+                    print("Detected Apple DiskCopy 4.2 image format. Converting to standard raw image...")
+                    data_size = unpack(">I", dc_header[64:68])[0]
+                    temp_iso = args.dir / f"{args.src.stem}.iso"
+                    os.makedirs(args.dir, exist_ok=True)
+                    with open(temp_iso, "wb") as out_f:
+                        dc_f.seek(84)
+                        bytes_left = data_size
+                        while bytes_left > 0:
+                            chunk_size = min(bytes_left, 1024 * 1024)
+                            chunk = dc_f.read(chunk_size)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            bytes_left -= len(chunk)
+                    args.src = temp_iso
+
+        # Check if the file is a CHD
+        if args.src.suffix.lower() == ".chd":
+            import shutil
+            import subprocess
+            if not shutil.which("chdman"):
+                raise FileNotFoundError(
+                    "chdman is required to extract CHD files but was not found in PATH."
+                )
+
+            temp_cue = args.dir / f"{args.src.stem}_temp.cue"
+            temp_bin = args.dir / f"{args.src.stem}_temp.bin"
+            os.makedirs(args.dir, exist_ok=True)
+
+            print("Extracting CHD to temporary CUE/BIN using chdman...")
+            res = subprocess.run(
+                ["chdman", "extractcd", "-i", str(args.src), "-o", str(temp_cue), "-ob", str(temp_bin)],
+                capture_output=True,
+                text=True
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"chdman failed: {res.stderr}")
+
+            temp_files_to_clean.extend([temp_cue, temp_bin])
+            args.src = temp_cue
+
         # CloneCD metadata is stored in .ccd while sector data
         # resides in the matching .img file.
         if args.src.suffix.lower() == ".ccd":
@@ -499,7 +770,32 @@ def extract_iso(args: argparse.Namespace) -> None:
             )
 
             args.src = temp_iso
-  
+
+        elif args.src.suffix.lower() == ".nrg":
+            temp_iso = args.dir / f"{args.src.stem}.iso"
+            os.makedirs(args.dir, exist_ok=True)
+            convert_nrg_to_iso(args.src, temp_iso)
+            args.src = temp_iso
+
+        elif args.src.suffix.lower() == ".cue":
+            bin_path, track_mode = parse_cue(args.src)
+            size = bin_path.stat().st_size
+            if "2352" in track_mode or (size % 2352 == 0 and size % 2048 != 0):
+                temp_iso = args.dir / f"{args.src.stem}.iso"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_bin_2352_to_2048(bin_path, temp_iso, track_mode)
+                args.src = temp_iso
+            else:
+                args.src = bin_path
+
+        elif args.src.suffix.lower() in [".bin", ".img"]:
+            size = args.src.stat().st_size
+            if size % 2352 == 0 and size % 2048 != 0:
+                temp_iso = args.dir / f"{args.src.stem}.iso"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_bin_2352_to_2048(args.src, temp_iso, "MODE1/2352")
+                args.src = temp_iso
+
         loglevel: str = args.log
 
         numeric_level = getattr(logging, loglevel.upper(), None)
@@ -522,16 +818,143 @@ def extract_iso(args: argparse.Namespace) -> None:
             extract_volume_iso(args)
         elif args.fs == FileSystem.hfs:
             extract_volume_hfs(args)
+        elif args.fs == FileSystem.operafs:
+            extract_volume_operafs(args)
         else:
             extract_volume_hybrid(args)
             
     finally:
+        for temp_file in temp_files_to_clean:
+            if temp_file.exists() and not args.keep_files:
+                temp_file.unlink()
         if (
             temp_iso is not None
             and not args.keep_files
             and temp_iso.exists()
         ):
             temp_iso.unlink()
+
+
+def extract_volume_operafs(args: argparse.Namespace) -> None:
+    """Extract a 3DO (OperaFS) volume"""
+    source_volume = args.src
+    silent: bool = args.silent
+    dryrun: bool = args.dryrun
+
+    if not silent:
+        logging.info(f"Loading 3DO image {source_volume} ...")
+
+    with open(source_volume, "rb") as f:
+        offset = find_3do_offset(f)
+        if offset is None:
+            raise ValueError("Not a valid 3DO (OperaFS) disc image")
+
+        # Read Root Directory start block at offset + 0x64
+        f.seek(offset + 0x64)
+        root_block = unpack(">I", f.read(4))[0]
+
+        # Call recursive directory unpacker
+        extract_operafs_dir(f, offset, root_block, args.dir, args)
+
+
+def extract_operafs_dir(f: IOBase, offset: int, block: int, dest_dir: Path, args: argparse.Namespace) -> None:
+    dryrun: bool = args.dryrun
+    silent: bool = args.silent
+    dopunycode: bool = not args.nopunycode
+    japanese: bool = args.japanese
+
+    block_size = 2048
+
+    while True:
+        # Seek to the start of the current page/block
+        f.seek(offset + block * block_size)
+        dir_head_data = f.read(20)
+        if len(dir_head_data) != 20:
+            if not silent:
+                logging.warning(f"Failed to read DirHeader at block {block}")
+            return
+
+        cur_page_num, unknow1, unknow2, size_of_dir, unknow3 = unpack(">IIIII", dir_head_data)
+
+        # Loop over FileEntry records in the current page/block
+        while True:
+            file_entry_data = f.read(72)
+            if len(file_entry_data) != 72:
+                break
+
+            # Unpack FileEntry fields
+            attr, unknow1, file_ext_bytes, unknow2, file_size_bytes, file_size_blocks, unknow3, unknow4, file_name_bytes, number_copies, start_block = unpack(">II4sIIIII32sII", file_entry_data)
+
+            # Skip backup positions/copies if any
+            if number_copies > 0:
+                f.seek(number_copies * 4, 1)
+
+            # Record the next entry file position
+            next_entry_pos = f.tell()
+
+            # Clean and decode filename
+            # FileName is 32 bytes, null-padded/terminated
+            file_name = file_name_bytes.split(b"\x00")[0]
+            if japanese:
+                try:
+                    file_name_str = decode_macjapanese(file_name)
+                except Exception:
+                    # Fallback to standard decoding if it fails
+                    file_name_str = file_name.decode("latin1", errors="replace")
+            else:
+                file_name_str = file_name.decode("latin1", errors="replace")
+
+            # Apply punycode if needed
+            if dopunycode:
+                file_name_str = punyencode(file_name_str)
+
+            # Determine type of entry
+            entry_type = attr & 255
+
+            if entry_type == 7:
+                # Directory
+                sub_dir = dest_dir / file_name_str
+                if not silent:
+                    print(sub_dir)
+                if not dryrun:
+                    sub_dir.mkdir(parents=True, exist_ok=True)
+
+                # Recurse into subdirectory
+                extract_operafs_dir(f, offset, start_block, sub_dir, args)
+                # Seek back to current position
+                f.seek(next_entry_pos)
+
+            elif entry_type in [2, 6]:
+                # File
+                out_file_path = dest_dir / file_name_str
+                if not silent:
+                    print(out_file_path)
+
+                if not dryrun:
+                    out_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    f.seek(offset + start_block * block_size)
+                    with open(out_file_path, "wb") as out_f:
+                        bytes_left = file_size_bytes
+                        while bytes_left > 0:
+                            chunk_size = min(bytes_left, 1024 * 1024)
+                            data = f.read(chunk_size)
+                            if not data:
+                                break
+                            out_f.write(data)
+                            bytes_left -= len(data)
+
+                # Seek back to current position
+                f.seek(next_entry_pos)
+
+            # Check if this was the last entry of the page
+            if attr >= 256:
+                break
+
+        # Check if directory continues on the next block
+        if (attr & 0xFF000000) == 0x40000000:
+            block += 1
+        else:
+            break
 
 
 def extract_volume_hfs(args: argparse.Namespace) -> None:
@@ -1185,7 +1608,7 @@ def generate_parser() -> argparse.ArgumentParser:
     )
     parser_iso.add_argument(
         "--fs",
-        choices=["iso9660", "hfs", "hybrid"],
+        choices=["iso9660", "hfs", "hybrid", "operafs"],
         metavar="FILE_SYSTEM",
         help="Specify the file system of the ISO",
     )
@@ -1366,3 +1789,277 @@ def test_escape_string():
     for input, output in checks:
         assert escape_string(input) == output
         assert unescape_string(output) == input
+
+
+def test_convert_nrg_to_iso(tmp_path):
+    nrg_file = tmp_path / "test.nrg"
+    iso_file = tmp_path / "test.iso"
+
+    # Write a dummy NRG file with 307200 bytes of lead-in and some data
+    lead_in = b"A" * 307200
+    data = b"HELLO_NRG_CONVERTED"
+    nrg_file.write_bytes(lead_in + data)
+
+    convert_nrg_to_iso(nrg_file, iso_file)
+
+    assert iso_file.exists()
+    assert iso_file.read_bytes() == data
+
+
+def test_parse_cue(tmp_path):
+    cue_file = tmp_path / "game.cue"
+    bin_file = tmp_path / "game.bin"
+    bin_file.write_bytes(b"DUMMY_BIN_DATA")
+
+    # Mode 1 2352 test
+    cue_file.write_text(
+        'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    resolved_path, track_mode = parse_cue(cue_file)
+    assert resolved_path.name == "game.bin"
+    assert track_mode == "MODE1/2352"
+
+
+def test_convert_bin_2352_to_2048(tmp_path):
+    bin_file = tmp_path / "raw.bin"
+    iso_file = tmp_path / "raw.iso"
+
+    # Create dummy 2352 sector data for MODE1
+    # 16 bytes of sync/header + 2048 bytes payload + 288 bytes error detection/correction
+    header = b"H" * 16
+    payload = b"X" * 2048
+    footer = b"F" * 288
+    bin_file.write_bytes(header + payload + footer)
+
+    convert_bin_2352_to_2048(bin_file, iso_file, "MODE1/2352")
+
+    assert iso_file.exists()
+    assert iso_file.read_bytes() == payload
+
+
+def test_find_3do_offset(tmp_path):
+    img_file = tmp_path / "3do.img"
+
+    # Let's write a valid 3DO header block at sector 150
+    header_block = bytearray(2048)
+    header_block[0:7] = b"\x01ZZZZZ\x01"
+    header_block[0x28 : 0x28 + 6] = b"CD-ROM"
+
+    # Prefix with 150 empty sectors
+    data = b"\x00" * (150 * 2048) + header_block
+    img_file.write_bytes(data)
+
+    with open(img_file, "rb") as f:
+        offset = find_3do_offset(f)
+        assert offset == 150 * 2048
+
+
+def test_extract_volume_operafs(tmp_path):
+    # Construct a fully valid mock 3DO disc image structure in-memory/file
+    img_file = tmp_path / "mock_3do.iso"
+    dest_dir = tmp_path / "output"
+
+    # sector 0: 3DO header block
+    header_block = bytearray(2048)
+    header_block[0:7] = b"\x01ZZZZZ\x01"
+    header_block[0x28 : 0x28 + 6] = b"CD-ROM"
+    # Root directory start block is at 0x64
+    header_block[0x64 : 0x64 + 4] = pack(">I", 1)  # start block is sector 1
+
+    # sector 1: Root directory page/block
+    # DirHead (20 bytes)
+    # cur_page_num (0), unknow1 (0), unknow2 (0), size_of_dir (1), unknow3 (0)
+    dir_head = pack(">IIIII", 0, 0, 0, 1, 0)
+
+    # Let's add two files in the root:
+    # 1. A subdirectory named "Nested"
+    # FileEntry: attr (7), unknow1 (0), FileExt ("ext "), unknow2 (0), FileSizeBytes (0),
+    # FileSizeBlocks (0), unknow3 (0), unknow4 (0), FileName ("Nested"), NumberCopies (0), StartBlock (2)
+    nested_dir_entry = pack(
+        ">II4sIIIII32sII",
+        7, 0, b"ext ", 0, 0, 0, 0, 0, b"Nested", 0, 2
+    )
+
+    # 2. A regular file named "hello.txt"
+    # FileEntry: attr (2 | 256 to mark end of page), unknow1 (0), FileExt ("txt "), unknow2 (0),
+    # FileSizeBytes (11), FileSizeBlocks (1), unknow3 (0), unknow4 (0), FileName ("hello.txt"), NumberCopies (0), StartBlock (3)
+    hello_file_entry = pack(
+        ">II4sIIIII32sII",
+        2 | 256, 0, b"txt ", 0, 11, 1, 0, 0, b"hello.txt", 0, 3
+    )
+
+    sector_1 = bytearray(2048)
+    sector_1[0:20] = dir_head
+    sector_1[20:20+72] = nested_dir_entry
+    sector_1[20+72:20+72+72] = hello_file_entry
+
+    # sector 2: Nested directory page/block
+    # Let's add a file "secret.bin" in Nested directory
+    nested_dir_head = pack(">IIIII", 0, 0, 0, 1, 0)
+    secret_file_entry = pack(
+        ">II4sIIIII32sII",
+        2 | 256, 0, b"bin ", 0, 9, 1, 0, 0, b"secret.bin", 0, 4
+    )
+    sector_2 = bytearray(2048)
+    sector_2[0:20] = nested_dir_head
+    sector_2[20:20+72] = secret_file_entry
+
+    # sector 3: Content of "hello.txt" ("HELLO WORLD")
+    sector_3 = bytearray(2048)
+    sector_3[0:11] = b"HELLO WORLD"
+
+    # sector 4: Content of "secret.bin" ("TOPSECRET")
+    sector_4 = bytearray(2048)
+    sector_4[0:9] = b"TOPSECRET"
+
+    # Concatenate sectors
+    img_file.write_bytes(header_block + sector_1 + sector_2 + sector_3 + sector_4)
+
+    # Call extraction
+    class DummyArgs:
+        src = img_file
+        dir = dest_dir
+        silent = True
+        dryrun = False
+        nopunycode = False
+        japanese = False
+
+    args = DummyArgs()
+    extract_volume_operafs(args)
+
+    # Verify extracted outputs
+    assert (dest_dir / "hello.txt").exists()
+    assert (dest_dir / "hello.txt").read_bytes() == b"HELLO WORLD"
+
+    assert (dest_dir / "Nested").is_dir()
+    assert (dest_dir / "Nested" / "secret.bin").exists()
+    assert (dest_dir / "Nested" / "secret.bin").read_bytes() == b"TOPSECRET"
+
+
+def test_extract_chd_no_chdman(tmp_path, monkeypatch):
+    import shutil
+    # Mock shutil.which to return None to simulate missing chdman
+    monkeypatch.setattr(shutil, "which", lambda x: None)
+
+    chd_file = tmp_path / "game.chd"
+    chd_file.write_bytes(b"MOCK_CHD_DATA")
+
+    class DummyArgs:
+        src = chd_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    import pytest
+    with pytest.raises(FileNotFoundError, match="chdman is required"):
+        extract_iso(DummyArgs())
+
+
+def test_diskcopy_42_conversion(tmp_path):
+    dc_file = tmp_path / "test.dsk"
+    header = bytearray(84)
+    header[82:84] = b"\x01\x00"
+    data_size = 19
+    header[64:68] = pack(">I", data_size)
+    payload = b"DISKCOPY_42_PAYLOAD"
+    dc_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = dc_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = True
+
+    # Calling extract_iso should fail eventually since the payload isn't a real filesystem,
+    # but the DC42 conversion should execute successfully and replace args.src with the unpacked payload.
+    import pytest
+    args = DummyArgs()
+    with pytest.raises(Exception):
+        extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.read_bytes() == payload
+
+
+def test_pc98_fdi_conversion(tmp_path):
+    fdi_file = tmp_path / "game.fdi"
+    header = bytearray(4096)
+    # Header size at offset 28 is 4096 (little endian)
+    header[28:32] = pack("<I", 4096)
+    payload = b"PC98_FDI_SECTOR_DATA"
+    fdi_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = fdi_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
+    assert args.src.read_bytes() == payload
+
+
+def test_d88_conversion(tmp_path):
+    d88_file = tmp_path / "game.d88"
+
+    # Construct 32-byte disk header
+    disk_header = bytearray(32)
+    disk_header[0:16] = b"Mock Disk Title\x00"
+
+    # Offset table (164 entries of 4 bytes)
+    # Track 0 starts at 688, track 1 starts at 688+20, etc.
+    offset_table = bytearray(656)
+    offset_table[0:4] = pack("<I", 688)
+
+    # Sector data at 688
+    # Sector header (16 bytes)
+    # C(0), H(0), R(1), N(1) = 256 bytes.
+    # Number of sectors: offset 4 is 1 (WORD)
+    # Actual data size: offset 14 is 10 (WORD)
+    sector_header = bytearray(16)
+    sector_header[0:4] = b"\x00\x00\x01\x01"
+    sector_header[4:6] = pack("<H", 1)
+    sector_header[14:16] = pack("<H", 10)
+
+    payload = b"D88PAYLOAD"
+
+    d88_file.write_bytes(disk_header + offset_table + sector_header + payload)
+
+    class DummyArgs:
+        src = d88_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
+    assert args.src.read_bytes() == payload
+
+
+def test_pc98_hdi_conversion(tmp_path):
+    hdi_file = tmp_path / "game.hdi"
+    header = bytearray(4096)
+    # Header size at offset 8 is 4096 (little endian)
+    header[8:12] = pack("<I", 4096)
+    payload = b"PC98_HDI_DISK_DATA"
+    hdi_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = hdi_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
+    assert args.src.read_bytes() == payload
