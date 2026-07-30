@@ -488,6 +488,8 @@ def check_fs(iso: str) -> FileSystem:
         # (mac_1 == b"LK" and mac_3 == b"BD") is only for bootable volumes
         disk_formats.append(FileSystem.hfs)
 
+    if not disk_formats:
+        raise ValueError("Could not detect any supported filesystem (HFS, ISO9660, or 3DO OperaFS)")
     if len(set(disk_formats)) > 1:
         return FileSystem.hybrid
     return disk_formats[0]
@@ -585,10 +587,66 @@ def convert_bin_2352_to_2048(bin_path: Path, iso_path: Path, track_mode: str) ->
             dst.write(chunk[data_offset : data_offset + 2048])
 
 
+def convert_pc98_fdi_to_img(fdi_path: Path, img_path: Path) -> None:
+    """
+    Convert a PC-98 FDI floppy image into a raw sector image by stripping the FDI header.
+    """
+    header_size = 4096
+    with open(fdi_path, "rb") as src:
+        src.seek(28)
+        header_size_bytes = src.read(4)
+        if len(header_size_bytes) == 4:
+            val = unpack("<I", header_size_bytes)[0]
+            if val in [4096, 512, 1024, 2048]:
+                header_size = val
+
+        src.seek(header_size)
+        with open(img_path, "wb") as dst:
+            while chunk := src.read(1024 * 1024):
+                dst.write(chunk)
+
+
+def convert_pc98_hdi_to_img(hdi_path: Path, img_path: Path) -> None:
+    """
+    Convert a PC-98 HDI hard disk image into a raw sector image by stripping the HDI header.
+    """
+    header_size = 4096
+    with open(hdi_path, "rb") as src:
+        src.seek(8)
+        header_size_bytes = src.read(4)
+        if len(header_size_bytes) == 4:
+            val = unpack("<I", header_size_bytes)[0]
+            if val in [4096, 512, 1024, 2048]:
+                header_size = val
+
+        src.seek(header_size)
+        with open(img_path, "wb") as dst:
+            while chunk := src.read(1024 * 1024):
+                dst.write(chunk)
+
+
 def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
     temp_files_to_clean = []
     try:
+        # Handle PC-98 FDI and HDI floppy/hard disk images
+        if args.src.exists() and args.src.suffix.lower() in [".fdi", ".hdi"]:
+            if args.src.suffix.lower() == ".fdi":
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_pc98_fdi_to_img(args.src, temp_iso)
+                print(f"Stripped FDI header and saved raw disk sector image to {temp_iso}")
+            else:
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_pc98_hdi_to_img(args.src, temp_iso)
+                print(f"Stripped HDI header and saved raw disk sector image to {temp_iso}")
+
+            args.src = temp_iso
+            args.keep_files = True
+            print("Conversion completed successfully!")
+            return
+
         # Check if the file is a DiskCopy 4.2 image
         if args.src.exists() and args.src.stat().st_size >= 84:
             with open(args.src, "rb") as dc_f:
@@ -1860,4 +1918,48 @@ def test_diskcopy_42_conversion(tmp_path):
         extract_iso(args)
 
     assert args.src.exists()
+    assert args.src.read_bytes() == payload
+
+
+def test_pc98_fdi_conversion(tmp_path):
+    fdi_file = tmp_path / "game.fdi"
+    header = bytearray(4096)
+    # Header size at offset 28 is 4096 (little endian)
+    header[28:32] = pack("<I", 4096)
+    payload = b"PC98_FDI_SECTOR_DATA"
+    fdi_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = fdi_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
+    assert args.src.read_bytes() == payload
+
+
+def test_pc98_hdi_conversion(tmp_path):
+    hdi_file = tmp_path / "game.hdi"
+    header = bytearray(4096)
+    # Header size at offset 8 is 4096 (little endian)
+    header[8:12] = pack("<I", 4096)
+    payload = b"PC98_HDI_DISK_DATA"
+    hdi_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = hdi_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
     assert args.src.read_bytes() == payload
