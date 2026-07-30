@@ -589,6 +589,27 @@ def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
     temp_files_to_clean = []
     try:
+        # Check if the file is a DiskCopy 4.2 image
+        if args.src.exists() and args.src.stat().st_size >= 84:
+            with open(args.src, "rb") as dc_f:
+                dc_header = dc_f.read(84)
+                if len(dc_header) == 84 and dc_header[82:84] == b"\x01\x00":
+                    print("Detected Apple DiskCopy 4.2 image format. Converting to standard raw image...")
+                    data_size = unpack(">I", dc_header[64:68])[0]
+                    temp_iso = args.dir / f"{args.src.stem}.iso"
+                    os.makedirs(args.dir, exist_ok=True)
+                    with open(temp_iso, "wb") as out_f:
+                        dc_f.seek(84)
+                        bytes_left = data_size
+                        while bytes_left > 0:
+                            chunk_size = min(bytes_left, 1024 * 1024)
+                            chunk = dc_f.read(chunk_size)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            bytes_left -= len(chunk)
+                    args.src = temp_iso
+
         # Check if the file is a CHD
         if args.src.suffix.lower() == ".chd":
             import shutil
@@ -1814,3 +1835,29 @@ def test_extract_chd_no_chdman(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(FileNotFoundError, match="chdman is required"):
         extract_iso(DummyArgs())
+
+
+def test_diskcopy_42_conversion(tmp_path):
+    dc_file = tmp_path / "test.dsk"
+    header = bytearray(84)
+    header[82:84] = b"\x01\x00"
+    data_size = 19
+    header[64:68] = pack(">I", data_size)
+    payload = b"DISKCOPY_42_PAYLOAD"
+    dc_file.write_bytes(header + payload)
+
+    class DummyArgs:
+        src = dc_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = True
+
+    # Calling extract_iso should fail eventually since the payload isn't a real filesystem,
+    # but the DC42 conversion should execute successfully and replace args.src with the unpacked payload.
+    import pytest
+    args = DummyArgs()
+    with pytest.raises(Exception):
+        extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.read_bytes() == payload
