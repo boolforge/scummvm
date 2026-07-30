@@ -587,7 +587,33 @@ def convert_bin_2352_to_2048(bin_path: Path, iso_path: Path, track_mode: str) ->
 
 def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
+    temp_files_to_clean = []
     try:
+        # Check if the file is a CHD
+        if args.src.suffix.lower() == ".chd":
+            import shutil
+            import subprocess
+            if not shutil.which("chdman"):
+                raise FileNotFoundError(
+                    "chdman is required to extract CHD files but was not found in PATH."
+                )
+
+            temp_cue = args.dir / f"{args.src.stem}_temp.cue"
+            temp_bin = args.dir / f"{args.src.stem}_temp.bin"
+            os.makedirs(args.dir, exist_ok=True)
+
+            print("Extracting CHD to temporary CUE/BIN using chdman...")
+            res = subprocess.run(
+                ["chdman", "extractcd", "-i", str(args.src), "-o", str(temp_cue), "-ob", str(temp_bin)],
+                capture_output=True,
+                text=True
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"chdman failed: {res.stderr}")
+
+            temp_files_to_clean.extend([temp_cue, temp_bin])
+            args.src = temp_cue
+
         # CloneCD metadata is stored in .ccd while sector data
         # resides in the matching .img file.
         if args.src.suffix.lower() == ".ccd":
@@ -659,6 +685,9 @@ def extract_iso(args: argparse.Namespace) -> None:
             extract_volume_hybrid(args)
             
     finally:
+        for temp_file in temp_files_to_clean:
+            if temp_file.exists() and not args.keep_files:
+                temp_file.unlink()
         if (
             temp_iso is not None
             and not args.keep_files
@@ -1766,3 +1795,22 @@ def test_extract_volume_operafs(tmp_path):
     assert (dest_dir / "Nested").is_dir()
     assert (dest_dir / "Nested" / "secret.bin").exists()
     assert (dest_dir / "Nested" / "secret.bin").read_bytes() == b"TOPSECRET"
+
+
+def test_extract_chd_no_chdman(tmp_path, monkeypatch):
+    import shutil
+    # Mock shutil.which to return None to simulate missing chdman
+    monkeypatch.setattr(shutil, "which", lambda x: None)
+
+    chd_file = tmp_path / "game.chd"
+    chd_file.write_bytes(b"MOCK_CHD_DATA")
+
+    class DummyArgs:
+        src = chd_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    import pytest
+    with pytest.raises(FileNotFoundError, match="chdman is required"):
+        extract_iso(DummyArgs())
