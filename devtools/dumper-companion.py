@@ -625,22 +625,82 @@ def convert_pc98_hdi_to_img(hdi_path: Path, img_path: Path) -> None:
                 dst.write(chunk)
 
 
+def convert_d88_to_img(d88_path: Path, img_path: Path) -> None:
+    """
+    Convert a D88/D77 floppy disk image into a standard raw sector image (.img).
+    This handles multi-sector tracks, sorts sectors by ID, and writes raw sector data.
+    """
+    with open(d88_path, "rb") as src, open(img_path, "wb") as dst:
+        disk_header = src.read(32)
+        if len(disk_header) != 32:
+            raise ValueError("Incomplete D88 disk header")
+
+        offset_table_data = src.read(656)
+        if len(offset_table_data) < 640:
+            raise ValueError("Incomplete D88 offset table")
+
+        num_entries = len(offset_table_data) // 4
+        track_offsets = []
+        for i in range(num_entries):
+            off = unpack("<I", offset_table_data[i*4 : i*4+4])[0]
+            if off >= 672:
+                track_offsets.append(off)
+
+        track_offsets = sorted(list(set(track_offsets)))
+
+        for off in track_offsets:
+            src.seek(off)
+
+            sec_header = src.read(16)
+            if len(sec_header) != 16:
+                break
+
+            num_sectors = unpack("<H", sec_header[4:6])[0]
+
+            track_sectors = []
+            curr_pos = off
+
+            for _ in range(num_sectors):
+                src.seek(curr_pos)
+                h_data = src.read(16)
+                if len(h_data) != 16:
+                    break
+
+                c, h, r, n = h_data[0], h_data[1], h_data[2], h_data[3]
+                data_size = unpack("<H", h_data[14:16])[0]
+
+                payload = src.read(data_size)
+
+                track_sectors.append((r, payload))
+                curr_pos = src.tell()
+
+            track_sectors = sorted(track_sectors, key=lambda x: x[0])
+
+            for r, payload in track_sectors:
+                dst.write(payload)
+
+
 def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
     temp_files_to_clean = []
     try:
-        # Handle PC-98 FDI and HDI floppy/hard disk images
-        if args.src.exists() and args.src.suffix.lower() in [".fdi", ".hdi"]:
+        # Handle PC-98 FDI, HDI, and D88 floppy/hard disk images
+        if args.src.exists() and args.src.suffix.lower() in [".fdi", ".hdi", ".d88", ".d77", ".88d"]:
             if args.src.suffix.lower() == ".fdi":
                 temp_iso = args.dir / f"{args.src.stem}.img"
                 os.makedirs(args.dir, exist_ok=True)
                 convert_pc98_fdi_to_img(args.src, temp_iso)
                 print(f"Stripped FDI header and saved raw disk sector image to {temp_iso}")
-            else:
+            elif args.src.suffix.lower() == ".hdi":
                 temp_iso = args.dir / f"{args.src.stem}.img"
                 os.makedirs(args.dir, exist_ok=True)
                 convert_pc98_hdi_to_img(args.src, temp_iso)
                 print(f"Stripped HDI header and saved raw disk sector image to {temp_iso}")
+            else:
+                temp_iso = args.dir / f"{args.src.stem}.img"
+                os.makedirs(args.dir, exist_ok=True)
+                convert_d88_to_img(args.src, temp_iso)
+                print(f"Converted D88/D77 image to standard raw disk sector image {temp_iso}")
 
             args.src = temp_iso
             args.keep_files = True
@@ -1931,6 +1991,46 @@ def test_pc98_fdi_conversion(tmp_path):
 
     class DummyArgs:
         src = fdi_file
+        dir = tmp_path / "out"
+        silent = True
+        keep_files = False
+
+    args = DummyArgs()
+    extract_iso(args)
+
+    assert args.src.exists()
+    assert args.src.name == "game.img"
+    assert args.src.read_bytes() == payload
+
+
+def test_d88_conversion(tmp_path):
+    d88_file = tmp_path / "game.d88"
+
+    # Construct 32-byte disk header
+    disk_header = bytearray(32)
+    disk_header[0:16] = b"Mock Disk Title\x00"
+
+    # Offset table (164 entries of 4 bytes)
+    # Track 0 starts at 688, track 1 starts at 688+20, etc.
+    offset_table = bytearray(656)
+    offset_table[0:4] = pack("<I", 688)
+
+    # Sector data at 688
+    # Sector header (16 bytes)
+    # C(0), H(0), R(1), N(1) = 256 bytes.
+    # Number of sectors: offset 4 is 1 (WORD)
+    # Actual data size: offset 14 is 10 (WORD)
+    sector_header = bytearray(16)
+    sector_header[0:4] = b"\x00\x00\x01\x01"
+    sector_header[4:6] = pack("<H", 1)
+    sector_header[14:16] = pack("<H", 10)
+
+    payload = b"D88PAYLOAD"
+
+    d88_file.write_bytes(disk_header + offset_table + sector_header + payload)
+
+    class DummyArgs:
+        src = d88_file
         dir = tmp_path / "out"
         silent = True
         keep_files = False
