@@ -1,0 +1,16 @@
+# Doxyfile for the Paco1994 ScummVM engine
+PROJECT_NAME           = "ScummVM: Paco1994 Engine"
+PROJECT_BRIEF           = "Paco El Hare vs Los Marcianos Siderales (1994)"
+OUTPUT_DIRECTORY        = engines/paco1994/docs/generated
+INPUT                   = engines/paco1994
+FILE_PATTERNS           = *.h *.cpp
+RECURSIVE               = NO
+EXTRACT_ALL             = YES
+EXTRACT_STATIC          = YES
+GENERATE_HTML           = YES
+GENERATE_LATEX          = NO
+GENERATE_TREEVIEW       = YES
+SOURCE_BROWSER          = YES
+JAVADOC_AUTOBRIEF       = YES
+WARN_IF_UNDOCUMENTED    = YES
+QUIET                   = YES
