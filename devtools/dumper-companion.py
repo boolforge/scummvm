@@ -40,6 +40,134 @@ from pathlib import Path
 import machfs  # type: ignore
 import pycdlib  # type: ignore
 
+class CDiExtractor:
+    """
+    Minimal CD-i Green Book extractor.
+    Focuses on extracting files from the ISO-like filesystem structure.
+    """
+
+    def __init__(self, src: Path, dest_dir: Path):
+        self.src = src
+        self.dest_dir = dest_dir
+        self.file_size = src.stat().st_size
+
+    def extract(self):
+        print("Commencing CD-i Green Book Ritual...")
+        with open(self.src, "rb") as f:
+            # Root directory record is usually at sector 16, offset 156
+            f.seek(16 * 2048 + 156)
+            root_record = f.read(34)
+            if len(root_record) < 34:
+                print("!! Failed to read CD-i root record.")
+                return False
+
+            extent = unpack("<I", root_record[2:6])[0]
+            size = unpack("<I", root_record[10:14])[0]
+            self._extract_dir(f, extent, size, self.dest_dir)
+            return True
+
+    def _extract_dir(self, f, extent, size, current_out):
+        os.makedirs(current_out, exist_ok=True)
+        pos_in_file = extent * 2048
+        if pos_in_file >= self.file_size:
+            return
+
+        f.seek(pos_in_file)
+        dir_data = f.read(size)
+        pos = 0
+        while pos < len(dir_data):
+            rec_len = dir_data[pos]
+            if rec_len == 0:
+                # Padding at end of sector
+                pos = (pos // 2048 + 1) * 2048
+                continue
+
+            if pos + rec_len > len(dir_data):
+                break
+
+            extent_loc = unpack("<I", dir_data[pos + 2 : pos + 6])[0]
+            data_len = unpack("<I", dir_data[pos + 10 : pos + 14])[0]
+            file_flags = dir_data[pos + 25]
+            name_len = dir_data[pos + 32]
+
+            raw_name = dir_data[pos + 33 : pos + 33 + name_len]
+            name = raw_name.decode("ascii", "ignore").split(";")[0]
+
+            if name and name not in ["\x00", "\x01"]:
+                target = current_out / name
+                if file_flags & 0x02:  # Directory
+                    curr_pos = f.tell()
+                    self._extract_dir(f, extent_loc, data_len, target)
+                    f.seek(curr_pos)
+                else:  # File
+                    curr_pos = f.tell()
+                    f.seek(extent_loc * 2048)
+                    with open(target, "wb") as out_f:
+                        out_f.write(f.read(data_len))
+                    f.seek(curr_pos)
+
+            pos += rec_len
+
+
+class RogueExtractor:
+    """
+    File carving utility for damaged or non-standard disk images.
+    Searches for known file signatures and extracts data chunks.
+    """
+
+    SIGNATURES = {
+        b"RIFF": (".wav", 8, ">I"),  # RIFF header, size at offset 4 (handled specially)
+        b"FORM": (".aiff", 8, ">I"),  # AIFF/IFF
+        b"\xff\xd8\xff": (".jpg", 0, None),
+        b"\x89PNG\r\n\x1a\n": (".png", 0, None),
+        b"GIF87a": (".gif", 0, None),
+        b"GIF89a": (".gif", 0, None),
+        b"BM": (".bmp", 6, "<I"),
+        b"\x11\x00\x00\x00": (".scr", 0, None),  # Common in some engine assets
+        b"OggS": (".ogg", 0, None),
+    }
+
+    def __init__(self, src: Path, dest_dir: Path):
+        self.src = src
+        self.dest_dir = dest_dir
+
+    def extract(self):
+        print("🕵️ Invoking the Rogue Oracle (File Carving)...")
+        os.makedirs(self.dest_dir, exist_ok=True)
+        count = 0
+        with open(self.src, "rb") as f:
+            data = f.read()
+            for sig, (ext, size_off, size_fmt) in self.SIGNATURES.items():
+                pos = 0
+                while True:
+                    pos = data.find(sig, pos)
+                    if pos == -1:
+                        break
+
+                    # Try to determine size
+                    extracted_size = 4096  # Default fallback
+                    if size_fmt:
+                        try:
+                            s_data = data[pos + 4 : pos + 8]
+                            extracted_size = unpack(size_fmt, s_data)[0]
+                            if sig == b"RIFF" or sig == b"FORM":
+                                extracted_size += 8
+                        except:
+                            pass
+
+                    # Sanity check size
+                    if extracted_size > 100 * 1024 * 1024 or extracted_size <= 0:
+                        extracted_size = 4096
+
+                    out_path = self.dest_dir / f"carved_{count:04d}{ext}"
+                    with open(out_path, "wb") as out_f:
+                        out_f.write(data[pos : pos + extracted_size])
+
+                    count += 1
+                    pos += 1
+        print(f"✅ Rogue Ritual complete. Manifested {count} artifacts.")
+        return count > 0
+
 # fmt: off
 decode_map = {
     "81": ["　", "、", "。", "，", "．", "・", "：", "；", "？", "！", "゛", "゜", "´", "｀", "¨", "＾", "￣", "＿", "ヽ", "ヾ", "ゝ", "ゞ", "〃", "仝", "々", "〆", "〇", "ー", "—", "‐", "／", "＼", "〜", "‖", "｜", "…", "‥", "‘", "’", "“", "”", "（", "）", "〔", "〕", "［", "］", "｛", "｝", "〈", "〉", "《", "》", "「", "」", "『", "』", "【", "】", "＋", "−", "±", "×", None, "÷", "＝", "≠", "＜", "＞", "≦", "≧", "∞", "∴", "♂", "♀", "°", "′", "″", "℃", "￥", "＄", "¢", "£", "％", "＃", "＆", "＊", "＠", "§", "☆", "★", "○", "●", "◎", "◇", "◆", "□", "■", "△", "▲", "▽", "▼", "※", "〒", "→", "←", "↑", "↓", "〓", None, None, None, None, None, None, None, None, None, None, None, "∈", "∋", "⊆", "⊇", "⊂", "⊃", "∪", "∩", None, None, None, None, None, None, None, None, "∧", "∨", "¬", "⇒", "⇔", "∀", "∃", None, None, None, None, None, None, None, None, None, None, None, "∠", "⊥", "⌒", "∂", "∇", "≡", "≒", "≪", "≫", "√", "∽", "∝", "∵", "∫", "∬", None, None, None, None, None, None, None, "Å", "‰", "♯", "♭", "♪", "†", "‡", "¶", None, None, None, None, "◯"],
@@ -104,6 +232,11 @@ class FileSystem(Enum):
     hfs = "hfs"
     iso9660 = "iso9660"
     operafs = "operafs"
+    cdi = "cdi"
+    amiga = "amiga"
+    atari = "atari"
+    fat12 = "fat12"
+    rogue = "rogue"
 
 
 class Extension(Enum):
