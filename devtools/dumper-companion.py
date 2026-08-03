@@ -775,7 +775,7 @@ def convert_d88_to_img(d88_path: Path, img_path: Path) -> None:
         num_entries = len(offset_table_data) // 4
         track_offsets = []
         for i in range(num_entries):
-            off = unpack("<I", offset_table_data[i*4 : i*4+4])[0]
+            off = unpack("<I", offset_table_data[i * 4 : i * 4 + 4])[0]
             if off >= 672:
                 track_offsets.append(off)
 
@@ -813,32 +813,86 @@ def convert_d88_to_img(d88_path: Path, img_path: Path) -> None:
                 dst.write(payload)
 
 
+def decompress_msa(src: Path, out: Path):
+    """
+    Decompress an Atari ST Magic Shadow Archiver (.msa) image.
+    """
+    with open(src, "rb") as f, open(out, "wb") as dst:
+        header = f.read(10)
+        if header[0:2] != b"\x0e\x0f":
+            raise ValueError("Invalid MSA header")
+
+        # ID: 0x0E0F, Sectors: WORD, Sides: WORD, Start: WORD, End: WORD
+        sectors, sides, start_track, end_track = unpack(">HHHH", header[2:10])
+        print(f"MSA: {sides} sides, tracks {start_track}-{end_track}, {sectors} sectors/track")
+
+        for track in range(start_track, end_track + 1):
+            for side in range(sides):
+                track_data_len_bytes = f.read(2)
+                if not track_data_len_bytes:
+                    break
+                track_data_len = unpack(">H", track_data_len_bytes)[0]
+                track_data = f.read(track_data_len)
+
+                if track_data_len == sectors * 512:
+                    dst.write(track_data)
+                else:
+                    # RLE decompression
+                    pos = 0
+                    decompressed = bytearray()
+                    while pos < len(track_data):
+                        byte = track_data[pos]
+                        if byte == 0xE5 and pos + 3 < len(track_data):
+                            marker = track_data[pos + 1]
+                            count = unpack(">H", track_data[pos + 2 : pos + 4])[0]
+                            decompressed.extend([marker] * count)
+                            pos += 4
+                        else:
+                            decompressed.append(byte)
+                            pos += 1
+                    dst.write(decompressed[: sectors * 512])
+    return True
+
+
 def extract_iso(args: argparse.Namespace) -> None:
     temp_iso = None
     temp_files_to_clean = []
     try:
-        # Handle PC-98 FDI, HDI, and D88 floppy/hard disk images
-        if args.src.exists() and args.src.suffix.lower() in [".fdi", ".hdi", ".d88", ".d77", ".88d"]:
-            if args.src.suffix.lower() == ".fdi":
-                temp_iso = args.dir / f"{args.src.stem}.img"
-                os.makedirs(args.dir, exist_ok=True)
+        # Handle various floppy/disk image formats
+        ext = args.src.suffix.lower()
+        if args.src.exists() and ext in [".fdi", ".hdi", ".d88", ".d77", ".88d", ".msa", ".adf", ".dsk"]:
+            temp_iso = args.dir / f"{args.src.stem}.img"
+            os.makedirs(args.dir, exist_ok=True)
+            if ext == ".fdi":
                 convert_pc98_fdi_to_img(args.src, temp_iso)
                 print(f"Stripped FDI header and saved raw disk sector image to {temp_iso}")
-            elif args.src.suffix.lower() == ".hdi":
-                temp_iso = args.dir / f"{args.src.stem}.img"
-                os.makedirs(args.dir, exist_ok=True)
+            elif ext == ".hdi":
                 convert_pc98_hdi_to_img(args.src, temp_iso)
                 print(f"Stripped HDI header and saved raw disk sector image to {temp_iso}")
-            else:
-                temp_iso = args.dir / f"{args.src.stem}.img"
-                os.makedirs(args.dir, exist_ok=True)
+            elif ext in [".d88", ".d77", ".88d"]:
                 convert_d88_to_img(args.src, temp_iso)
                 print(f"Converted D88/D77 image to standard raw disk sector image {temp_iso}")
+            elif ext == ".msa":
+                decompress_msa(args.src, temp_iso)
+                print(f"Decompressed MSA image to {temp_iso}")
+            elif ext == ".adf":
+                # ADF is already raw sectors, just copy/rename for consistency
+                with open(args.src, "rb") as s, open(temp_iso, "wb") as d:
+                    d.write(s.read())
+                print(f"Prepared Amiga ADF as raw image {temp_iso}")
+            elif ext == ".dsk":
+                # Basic handling for DSK (CPC/Spectrum)
+                # For now, we just pass it through or strip common headers
+                with open(args.src, "rb") as s, open(temp_iso, "wb") as d:
+                    d.write(s.read())
+                print(f"Prepared DSK image as raw image {temp_iso}")
 
             args.src = temp_iso
-            args.keep_files = True
-            print("Conversion completed successfully!")
-            return
+            # If we don't have a specific extractor for these yet, we might want to try Rogue Mode
+            # or just return if it's a raw dump intended for an emulator.
+            # But for ScummVM, we usually want to extract files.
+            # Let's continue to detection if it's a known filesystem.
+            # return
 
         # Check if the file is a DiskCopy 4.2 image
         if args.src.exists() and args.src.stat().st_size >= 84:
