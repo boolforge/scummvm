@@ -235,6 +235,10 @@ MODULE_OBJS := \
 	quest/read_file.o \
 	quest/string.o \
 	quest/streams.o \
+	quill/database.o \
+	quill/detection.o \
+	quill/quill.o \
+	quill/vm.o \
 	scott/c64_checksums.o \
 	scott/command_parser.o \
 	scott/decompress_text.o \
@@ -356,6 +360,7 @@ MODULE_OBJS := \
 	level9/detection.o \
 	magnetic/detection.o \
 	quest/detection.o \
+	quill/detection.o \
 	scott/detection.o \
 	tads/detection.o \
 	zcode/detection.o
@@ -389,6 +394,7 @@ DETECT_OBJS += $(MODULE)/jacl/detection.o
 DETECT_OBJS += $(MODULE)/level9/detection.o
 DETECT_OBJS += $(MODULE)/magnetic/detection.o
 DETECT_OBJS += $(MODULE)/quest/detection.o
+DETECT_OBJS += $(MODULE)/quill/detection.o
 DETECT_OBJS += $(MODULE)/scott/detection.o
 DETECT_OBJS += $(MODULE)/tads/detection.o
 DETECT_OBJS += $(MODULE)/zcode/detection.o
