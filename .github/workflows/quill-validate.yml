@@ -1,0 +1,75 @@
+name: Quill/AdventureWriter real-game validation
+
+# Manually triggered: this downloads real, third-party game archives to
+# validate engines/glk/quill's format understanding against real-world
+# data, which the development sandbox this branch was written in has no
+# direct network access to (see the "quill" branch's commit history).
+# It intentionally does NOT run on every push - re-run it by hand from the
+# Actions tab whenever the game list below is extended.
+#
+# Downloaded files are used transiently in this job only, to compute
+# structural facts (sizes, table offsets, hashes, and one short truncated
+# text sample per file for a human sanity check) - never to redistribute
+# game content. The uploaded artifact is the JSON report only; the
+# downloaded .xex/.zip files themselves are discarded when the job ends.
+on:
+  workflow_dispatch:
+    inputs:
+      atarimania_ids:
+        description: 'Comma-separated atarimania.com game IDs to fetch and validate'
+        required: false
+        default: '40328,858,6821,8636,904,6748,5007,5008,35696,35697'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download game archives from atarimania.com
+        run: |
+          mkdir -p /tmp/quill-roms
+          IFS=',' read -ra IDS <<< "${{ github.event.inputs.atarimania_ids }}"
+          for id in "${IDS[@]}"; do
+            echo "Fetching atarimania id=$id"
+            curl -sL --fail -A "Mozilla/5.0 (compatible; scummvm-quill-ci/1.0)" \
+              "https://www.atarimania.com/pgedump.awp?id=$id" \
+              -o "/tmp/quill-roms/$id.zip" || echo "  (failed for id=$id, skipping)"
+          done
+          ls -la /tmp/quill-roms
+
+      - name: Validate against engines/glk/quill's format understanding
+        run: |
+          python3 .github/scripts/quill_validate.py /tmp/quill-roms | tee /tmp/quill-validation-report.json
+          echo ""
+          echo "### Quill/AdventureWriter real-game validation" >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          with open('/tmp/quill-validation-report.json') as f:
+              report = json.load(f)
+          # Split into single results / a top-level list depending on wrapping
+          entries = report if isinstance(report, list) else [report]
+          print("| File | Size | Interpreter match | Objects | Locations | Vocab words | Sample |")
+          print("|---|---|---|---|---|---|---|")
+          for r in entries:
+              if "error" in r:
+                  print(f"| {r.get('file','?')} | {r.get('size','?')} | - | - | - | - | ERROR: {r['error']} |")
+                  continue
+              h = r.get("header", {})
+              sample = r.get("sample_location_1_first_60_chars", "").replace("|", "/")
+              print(f"| {r['file']} | {r['size']} | "
+                    f"{'YES' if r.get('interpreter_matches_known_adventurewriter') else 'no'} | "
+                    f"{h.get('objectCount','?')} | {h.get('locationCount','?')} | "
+                    f"{r.get('vocabulary_word_count','?')} | {sample} |")
+          EOF
+
+      - name: Upload validation report (JSON only - never the game files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: quill-validation-report
+          path: /tmp/quill-validation-report.json
+          retention-days: 14
+
+      - name: Clean up downloaded game archives
+        if: always()
+        run: rm -rf /tmp/quill-roms
