@@ -51,6 +51,8 @@
 #include "glk/magnetic/magnetic.h"
 #include "glk/quest/detection.h"
 #include "glk/quest/quest.h"
+#include "glk/quill/detection.h"
+#include "glk/quill/quill.h"
 #include "glk/scott/detection.h"
 #include "glk/scott/scott.h"
 
@@ -167,6 +169,7 @@ Common::Error GlkMetaEngine::createInstance(OSystem *syst, Engine **engine,
 	else if ((create<Glk::Level9::Level9MetaEngine, Glk::Level9::Level9>(syst, *gameDesc, *engine))) {}
 	else if ((create<Glk::Magnetic::MagneticMetaEngine, Glk::Magnetic::Magnetic>(syst, *gameDesc, *engine))) {}
 	else if ((create<Glk::Quest::QuestMetaEngine, Glk::Quest::Quest>(syst, *gameDesc, *engine))) {}
+	else if ((create<Glk::Quill::QuillMetaEngine, Glk::Quill::Quill>(syst, *gameDesc, *engine))) {}
 	else if ((create<Glk::Scott::ScottMetaEngine, Glk::Scott::Scott>(syst, *gameDesc, *engine))) {}
 	else if ((create<Glk::ZCode::ZCodeMetaEngine, Glk::ZCode::ZCode>(syst, *gameDesc, *engine))) {}
 #ifndef RELEASE_BUILD

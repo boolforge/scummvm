@@ -45,6 +45,7 @@
 #include "glk/level9/detection.h"
 #include "glk/magnetic/detection.h"
 #include "glk/quest/detection.h"
+#include "glk/quill/detection.h"
 #include "glk/scott/detection.h"
 #include "glk/zcode/detection.h"
 
@@ -146,6 +147,7 @@ PlainGameList GlkMetaEngineDetection::getSupportedGames() const {
 	Glk::Level9::Level9MetaEngine::getSupportedGames(list);
 	Glk::Magnetic::MagneticMetaEngine::getSupportedGames(list);
 	Glk::Quest::QuestMetaEngine::getSupportedGames(list);
+	Glk::Quill::QuillMetaEngine::getSupportedGames(list);
 	Glk::Scott::ScottMetaEngine::getSupportedGames(list);
 	Glk::ZCode::ZCodeMetaEngine::getSupportedGames(list);
 #ifndef RELEASE_BUILD
@@ -177,6 +179,7 @@ PlainGameDescriptor GlkMetaEngineDetection::findGame(const char *gameId) const {
 	FIND_GAME(Level9);
 	FIND_GAME(Magnetic);
 	FIND_GAME(Quest);
+	FIND_GAME(Quill);
 	FIND_GAME(Scott);
 	FIND_GAME(ZCode);
 #ifndef RELEASE_BUILD
@@ -281,6 +284,7 @@ DetectedGames GlkMetaEngineDetection::detectGames(const Common::FSList &fslist, 
 	Glk::Level9::Level9MetaEngine::detectGames(fslist, detectedGames);
 	Glk::Magnetic::MagneticMetaEngine::detectGames(fslist, detectedGames);
 	Glk::Quest::QuestMetaEngine::detectGames(fslist, detectedGames);
+	Glk::Quill::QuillMetaEngine::detectGames(fslist, detectedGames);
 	Glk::Scott::ScottMetaEngine::detectGames(fslist, detectedGames);
 	Glk::ZCode::ZCodeMetaEngine::detectGames(fslist, detectedGames);
 #ifndef RELEASE_BUILD
@@ -305,6 +309,7 @@ void GlkMetaEngineDetection::detectClashes() const {
 	Glk::Level9::Level9MetaEngine::detectClashes(map);
 	Glk::Magnetic::MagneticMetaEngine::detectClashes(map);
 	Glk::Quest::QuestMetaEngine::detectClashes(map);
+	Glk::Quill::QuillMetaEngine::detectClashes(map);
 	Glk::Scott::ScottMetaEngine::detectClashes(map);
 	Glk::ZCode::ZCodeMetaEngine::detectClashes(map);
 #ifndef RELEASE_BUILD
@@ -343,6 +348,7 @@ void GlkMetaEngineDetection::dumpDetectionEntries() const {
         { Glk::Level9::Level9MetaEngine::getDetectionEntries(), EngineName::LEVEL9 },
         { Glk::Magnetic::MagneticMetaEngine::getDetectionEntries(), EngineName::OTHER },
         { Glk::Quest::QuestMetaEngine::getDetectionEntries(), EngineName::OTHER },
+        { Glk::Quill::QuillMetaEngine::getDetectionEntries(), EngineName::OTHER },
         { Glk::Scott::ScottMetaEngine::getDetectionEntries(), EngineName::OTHER },
         { Glk::ZCode::ZCodeMetaEngine::getDetectionEntries(), EngineName::OTHER },
 #ifndef RELEASE_BUILD
